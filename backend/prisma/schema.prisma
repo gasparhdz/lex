@@ -1,0 +1,739 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Usuario {
+  id             Int       @id @default(autoincrement())
+  nombre         String
+  apellido       String
+  dni            String?   @unique
+  email          String    @unique
+  password       String
+  telefono       String?
+  activo         Boolean   @default(true)
+  lastLoginAt    DateTime?
+  mustChangePass Boolean   @default(false)
+
+  createdAt DateTime  @default(now())
+  createdBy Int?
+  updatedAt DateTime  @updatedAt
+  updatedBy Int?
+  deletedAt DateTime?
+  deletedBy Int?
+
+  roles           UsuarioRol[]
+  refreshTokens   RefreshToken[]
+  tareasAsignadas Tarea[]        @relation("UsuarioAsignadoTarea")
+  adjuntosSubidos Adjunto[]      @relation("AdjuntosUsuario")
+}
+
+model Rol {
+  id       Int          @id @default(autoincrement())
+  codigo   String       @unique // "ADMIN","ABOGADO","ASISTENTE"
+  nombre   String
+  activo   Boolean      @default(true)
+  permisos Permiso[]
+  usuarios UsuarioRol[]
+}
+
+model UsuarioRol {
+  id        Int     @id @default(autoincrement())
+  usuarioId Int
+  rolId     Int
+  usuario   Usuario @relation(fields: [usuarioId], references: [id])
+  rol       Rol     @relation(fields: [rolId], references: [id])
+
+  @@unique([usuarioId, rolId])
+}
+
+model Permiso {
+  id    Int @id @default(autoincrement())
+  rolId Int
+  rol   Rol @relation(fields: [rolId], references: [id])
+
+  modulo   String // "CLIENTES","CASOS","AGENDA","HONORARIOS","INGRESOS","GASTOS","REPORTES","ADJUNTOS","CONFIGURACION","USUARIOS"
+  ver      Boolean @default(false)
+  crear    Boolean @default(false)
+  editar   Boolean @default(false)
+  eliminar Boolean @default(false)
+
+  @@unique([rolId, modulo])
+}
+
+model RefreshToken {
+  id        Int       @id @default(autoincrement())
+  usuarioId Int
+  usuario   Usuario   @relation(fields: [usuarioId], references: [id])
+  tokenHash String
+  userAgent String?
+  ip        String?
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([usuarioId, expiresAt])
+}
+
+model Categoria {
+  id          Int      @id @default(autoincrement())
+  codigo      String   @unique // "TIPO_PERSONA","ESTADO_CASO", etc.
+  nombre      String
+  descripcion String?
+  activo      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  parametros Parametro[]
+}
+
+model Parametro {
+  id          Int         @id @default(autoincrement())
+  categoriaId Int
+  categoria   Categoria   @relation(fields: [categoriaId], references: [id])
+  parentId    Int?
+  parent      Parametro?  @relation("ParametroParent", fields: [parentId], references: [id])
+  children    Parametro[] @relation("ParametroParent")
+
+  codigo String
+  nombre String
+  orden  Int     @default(0)
+  activo Boolean @default(true)
+  extra  Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  clientesTipoPersona           Cliente[]      @relation("TipoPersona")
+  casosTipo                     Caso[]         @relation("TipoCaso")
+  casosEstado                   Caso[]         @relation("EstadoCaso")
+  casosRadicacion               Caso[]         @relation("RadicacionCaso")
+  casosEstadoRadicacion         Caso[]         @relation("EstadoRadicacion")
+  eventosTipo                   Evento[]       @relation("TipoEvento")
+  eventosEstado                 Evento[]       @relation("EstadoEvento")
+  tareasPrioridad               Tarea[]        @relation("ParametroToTareaPrioridad")
+  honorariosComoConcepto        Honorario[]    @relation("ConceptoHonorario")
+  honorariosComoParte           Honorario[]    @relation("ParteHonorario")
+  honorariosComoMoneda          Honorario[]    @relation("MonedaHonorario")
+  honorariosComoPolitica        Honorario[]    @relation("PoliticaJusHonorario")
+  honorariosComoEstado          Honorario[]    @relation("EstadoHonorario")
+  ingresosComoTipo              Ingreso[]      @relation("IngresoTipo")
+  ingresosComoMoneda            Ingreso[]      @relation("IngresoMoneda")
+  ingresosComoEstado            Ingreso[]      @relation("IngresoEstado")
+  gastosComoConcepto            Gasto[]        @relation("ConceptoGasto")
+  gastosComoMoneda              Gasto[]        @relation("MonedaGasto")
+  PlanPago                      PlanPago[]
+  ingresoCuotasComoAjusteMotivo IngresoCuota[] @relation("MotivoAjusteIngresoCuota")
+  ingresosCuotaTipoMovimiento   IngresoCuota[] @relation("TipoMovimientoIngresoCuota")
+  // Estados de cuotas de planes (pendiente, parcial, pagada, vencida, condonada)
+  planCuotasComoEstado          PlanCuota[]    @relation("EstadoCuota")
+
+  @@index([categoriaId, activo, orden])
+}
+
+model ValorJUS {
+  id    Int      @id @default(autoincrement())
+  valor Decimal  @db.Decimal(14, 4)
+  fecha DateTime @unique
+
+  // Auditoría
+  activo    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  createdBy Int?
+  updatedAt DateTime  @updatedAt
+  updatedBy Int?
+  deletedAt DateTime?
+  deletedBy Int?
+}
+
+model Pais {
+  id         Int         @id @default(autoincrement())
+  nombre     String
+  codigoIso  String?     @unique
+  provincias Provincia[]
+}
+
+model Provincia {
+  id          Int         @id @default(autoincrement())
+  nombre      String
+  paisId      Int
+  pais        Pais        @relation(fields: [paisId], references: [id])
+  localidades Localidad[]
+}
+
+model Localidad {
+  id              Int            @id @default(autoincrement())
+  nombre          String
+  provinciaId     Int
+  provincia       Provincia      @relation(fields: [provinciaId], references: [id])
+  codigosPostales CodigoPostal[]
+  clientes        Cliente[]
+}
+
+model CodigoPostal {
+  id          Int       @id @default(autoincrement())
+  codigo      String
+  localidadId Int
+  localidad   Localidad @relation(fields: [localidadId], references: [id])
+}
+
+model Cliente {
+  id Int @id @default(autoincrement())
+
+  tipoPersonaId Int
+  tipoPersona   Parametro @relation("TipoPersona", fields: [tipoPersonaId], references: [id])
+
+  nombre      String?
+  apellido    String?
+  razonSocial String?
+
+  dni             String?   @unique
+  cuit            String?   @unique
+  fechaNacimiento DateTime?
+
+  email      String?
+  telFijo    String?
+  telCelular String?
+
+  dirCalle     String?
+  dirNro       String?
+  dirPiso      String?
+  dirDepto     String?
+  codigoPostal String?
+
+  localidadId Int?
+  localidad   Localidad? @relation(fields: [localidadId], references: [id])
+
+  observaciones String?
+  activo        Boolean @default(true)
+
+  // Google Drive
+  driveFolderId String? // carpeta raíz del cliente en Drive
+
+  createdAt DateTime  @default(now())
+  createdBy Int?
+  updatedAt DateTime  @updatedAt
+  updatedBy Int?
+  deletedAt DateTime?
+  deletedBy Int?
+
+  contactos ContactoCliente[]
+  casos     Caso[]
+
+  eventos   Evento[]
+  tareas    Tarea[]
+  Honorario Honorario[]
+  Gasto     Gasto[]
+  Ingreso   Ingreso[]
+  PlanPago  PlanPago[]
+  
+  notas     ClienteNota[]
+  historial ClienteHistorial[]
+}
+
+model ContactoCliente {
+  id        Int     @id @default(autoincrement())
+  clienteId Int
+  cliente   Cliente @relation(fields: [clienteId], references: [id])
+
+  nombre        String
+  rol           String?
+  email         String?
+  telefono      String?
+  observaciones String?
+
+  createdAt DateTime  @default(now())
+  createdBy Int?
+  updatedAt DateTime  @updatedAt
+  updatedBy Int?
+  deletedAt DateTime?
+  deletedBy Int?
+}
+
+model ClienteNota {
+  id        Int     @id @default(autoincrement())
+  clienteId Int
+  cliente   Cliente @relation(fields: [clienteId], references: [id])
+
+  contenido String
+  
+  createdAt DateTime @default(now())
+  createdBy Int?
+  updatedAt DateTime @updatedAt
+  updatedBy Int?
+  deletedAt DateTime?
+  deletedBy Int?
+
+  @@index([clienteId])
+  @@index([createdAt])
+}
+
+model ClienteHistorial {
+  id        Int     @id @default(autoincrement())
+  clienteId Int
+  cliente   Cliente @relation(fields: [clienteId], references: [id])
+
+  campo         String
+  valorAnterior  String? @db.Text
+  valorNuevo     String? @db.Text
+  
+  createdAt DateTime @default(now())
+  createdBy Int?
+
+  @@index([clienteId])
+  @@index([createdAt])
+}
+
+model Caso {
+  id                    Int       @id @default(autoincrement())
+  clienteId             Int
+  nroExpte              String
+  nroExpteNorm          String?
+  caratula              String
+  tipoId                Int
+  descripcion           String?
+  estadoId              Int?
+  fechaEstado           DateTime  @default(now())
+  radicacionId          Int?
+  estadoRadicacionId    Int?
+  fechaEstadoRadicacion DateTime?
+
+  // Google Drive
+  driveFolderId String? // carpeta del caso en Drive
+  numeroDrive   Int?    // número correlativo NN (01, 02, 03, etc.)
+
+  activo    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  createdBy Int?
+  updatedAt DateTime  @updatedAt
+  updatedBy Int?
+  deletedAt DateTime?
+  deletedBy Int?
+
+  // Relaciones (estas sí existen hoy)
+  cliente          Cliente    @relation(fields: [clienteId], references: [id])
+  tipo             Parametro  @relation("TipoCaso", fields: [tipoId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  estado           Parametro? @relation("EstadoCaso", fields: [estadoId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  radicacion       Parametro? @relation("RadicacionCaso", fields: [radicacionId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  estadoRadicacion Parametro? @relation("EstadoRadicacion", fields: [estadoRadicacionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  eventos   Evento[]
+  tareas    Tarea[]
+  Honorario Honorario[]
+  Gasto     Gasto[]
+  Ingreso   Ingreso[]
+  PlanPago  PlanPago[]
+  
+  notas     CasoNota[]
+  historial CasoHistorial[]
+
+  @@index([clienteId])
+  @@index([estadoId, fechaEstado])
+  @@index([radicacionId, estadoRadicacionId])
+  @@index([tipoId])
+  @@index([nroExpte])
+}
+
+model CasoNota {
+  id        Int     @id @default(autoincrement())
+  casoId    Int
+  caso      Caso    @relation(fields: [casoId], references: [id])
+
+  contenido String
+
+  createdAt DateTime @default(now())
+  createdBy Int?
+  updatedAt DateTime @updatedAt
+  updatedBy Int?
+  deletedAt DateTime?
+  deletedBy Int?
+
+  @@index([casoId])
+  @@index([createdAt])
+}
+
+model CasoHistorial {
+  id        Int     @id @default(autoincrement())
+  casoId    Int
+  caso      Caso    @relation(fields: [casoId], references: [id])
+
+  campo         String
+  valorAnterior String? @db.Text
+  valorNuevo    String? @db.Text
+
+  createdAt DateTime @default(now())
+  createdBy Int?
+
+  @@index([casoId])
+  @@index([createdAt])
+}
+
+model Evento {
+  id                  Int       @id @default(autoincrement())
+  casoId              Int?
+  clienteId           Int?
+  fechaInicio         DateTime
+  fechaFin            DateTime?
+  allDay              Boolean   @default(false)
+  timezone            String?
+  tipoId              Int
+  estadoId            Int?
+  descripcion         String?
+  observaciones       String?
+  recordatorio        DateTime?
+  recordatorioEnviado Boolean   @default(false)
+  notificadoACliente  Boolean   @default(false)
+  ubicacion           String?
+
+  // Auditoría / soft delete
+  activo    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  createdBy Int?
+  updatedAt DateTime  @updatedAt
+  updatedBy Int?
+  deletedAt DateTime?
+  deletedBy Int?
+
+  // Relaciones
+  cliente Cliente?   @relation(fields: [clienteId], references: [id])
+  caso    Caso?      @relation(fields: [casoId], references: [id])
+  tipo    Parametro  @relation("TipoEvento", fields: [tipoId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  estado  Parametro? @relation("EstadoEvento", fields: [estadoId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([fechaInicio])
+  @@index([recordatorio, recordatorioEnviado])
+  @@index([clienteId])
+  @@index([casoId])
+  @@index([tipoId])
+  @@index([estadoId])
+  @@index([createdBy])
+}
+
+model Tarea {
+  id                  Int       @id @default(autoincrement())
+  titulo              String
+  descripcion         String?
+  fechaLimite         DateTime?
+  prioridadId         Int?
+  recordatorio        DateTime?
+  completada          Boolean   @default(false)
+  completadaAt        DateTime?
+  asignadoA           Int?
+  clienteId           Int?
+  casoId              Int?
+  recordatorioEnviado Boolean   @default(false)
+
+  // Auditoría / soft delete
+  activo    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  createdBy Int?
+  updatedAt DateTime  @updatedAt
+  updatedBy Int?
+  deletedAt DateTime?
+  deletedBy Int?
+
+  // Relaciones
+  cliente   Cliente?   @relation(fields: [clienteId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  caso      Caso?      @relation(fields: [casoId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  prioridad Parametro? @relation("ParametroToTareaPrioridad", fields: [prioridadId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  asignado  Usuario?   @relation("UsuarioAsignadoTarea", fields: [asignadoA], references: [id])
+
+  items SubTarea[]
+
+  @@index([completada])
+  @@index([fechaLimite])
+  @@index([recordatorio, recordatorioEnviado])
+  @@index([prioridadId])
+  @@index([clienteId])
+  @@index([casoId])
+  @@index([createdBy])
+  @@index([asignadoA])
+}
+
+model SubTarea {
+  id           Int       @id @default(autoincrement())
+  tareaId      Int
+  titulo       String
+  descripcion  String?
+  completada   Boolean   @default(false)
+  completadaAt DateTime?
+  orden        Int       @default(0)
+
+  // Auditoría / soft delete (para que “las 3 tablas” tengan activo)
+  activo    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  createdBy Int?
+  updatedAt DateTime  @updatedAt
+  updatedBy Int?
+  deletedAt DateTime?
+  deletedBy Int?
+
+  tarea Tarea @relation(fields: [tareaId], references: [id], onDelete: Cascade)
+
+  @@index([tareaId])
+  @@index([orden])
+}
+
+model Honorario {
+  id              Int       @id @default(autoincrement())
+  clienteId       Int?
+  casoId          Int?
+  conceptoId      Int
+  parteId         Int
+  jus             Decimal?  @db.Decimal(14, 4)
+  montoPesos      Decimal?  @db.Decimal(14, 2)
+  monedaId        Int? // Parametro(categoria="Moneda")
+  valorJusRef     Decimal?  @db.Decimal(14, 4) // snapshot informativo al momento de la regulación/pacto
+  politicaJusId   Int? // Parametro(categoria="PoliticaJUS")
+  fechaRegulacion DateTime
+  estadoId        Int? // Parametro(categoria="EstadoHonorario")
+  activo          Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  createdBy       Int?
+  updatedAt       DateTime  @updatedAt
+  updatedBy       Int?
+  deletedAt       DateTime?
+  deletedBy       Int?
+
+  // Relaciones
+  cliente     Cliente?   @relation(fields: [clienteId], references: [id])
+  caso        Caso?      @relation(fields: [casoId], references: [id])
+  concepto    Parametro  @relation("ConceptoHonorario", fields: [conceptoId], references: [id])
+  parte       Parametro  @relation("ParteHonorario", fields: [parteId], references: [id])
+  moneda      Parametro? @relation("MonedaHonorario", fields: [monedaId], references: [id])
+  politicaJus Parametro? @relation("PoliticaJusHonorario", fields: [politicaJusId], references: [id])
+  estado      Parametro? @relation("EstadoHonorario", fields: [estadoId], references: [id])
+
+  // Sin IngresoHonorario: los cobros van por PlanPago/PlanCuota + IngresoCuota
+  planes PlanPago[]
+
+  @@index([clienteId])
+  @@index([casoId])
+  @@index([estadoId])
+}
+
+model Gasto {
+  id            Int       @id @default(autoincrement())
+  clienteId     Int
+  casoId        Int?
+  conceptoId    Int?
+  descripcion   String?
+  fechaGasto    DateTime
+  monto         Decimal   @db.Decimal(14, 2)
+  monedaId      Int? // Parametro(categoria="Moneda"): ARS/USD/EUR
+  cotizacionARS Decimal?  @db.Decimal(14, 4) // snapshot si moneda != ARS
+  activo        Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  createdBy     Int?
+  updatedAt     DateTime  @updatedAt
+  updatedBy     Int?
+  deletedAt     DateTime?
+  deletedBy     Int?
+
+  // Relaciones
+  cliente      Cliente        @relation(fields: [clienteId], references: [id])
+  caso         Caso?          @relation(fields: [casoId], references: [id])
+  concepto     Parametro?     @relation("ConceptoGasto", fields: [conceptoId], references: [id])
+  moneda       Parametro?     @relation("MonedaGasto", fields: [monedaId], references: [id])
+  aplicaciones IngresoGasto[]
+
+  @@index([clienteId])
+  @@index([casoId, fechaGasto])
+}
+
+model Ingreso {
+  id                    Int       @id @default(autoincrement())
+  clienteId             Int?
+  casoId                Int?
+  descripcion           String?
+  monto                 Decimal   @db.Decimal(14, 2)
+  monedaId              Int? // Parametro(categoria="Moneda")
+  cotizacionARS         Decimal?  @db.Decimal(14, 4) // snapshot si moneda != ARS
+  fechaIngreso          DateTime
+  valorJusAlCobro       Decimal?  @db.Decimal(14, 4) // JUS vigente en fechaIngreso
+  montoJusEquivalente   Decimal?  @db.Decimal(14, 4) // monto → JUS al cobro
+  montoPesosEquivalente Decimal?  @db.Decimal(14, 2) // monto → ARS al cobro
+  tipoId                Int? // Parametro(categoria="IngresoTipo")
+  estadoId              Int? // Parametro(categoria="EstadoMovimiento")
+  activo                Boolean   @default(true)
+  createdAt             DateTime  @default(now())
+  createdBy             Int?
+  updatedAt             DateTime  @updatedAt
+  updatedBy             Int?
+  deletedAt             DateTime?
+  deletedBy             Int?
+
+  // Relaciones
+  cliente            Cliente?       @relation(fields: [clienteId], references: [id])
+  caso               Caso?          @relation(fields: [casoId], references: [id])
+  tipo               Parametro?     @relation("IngresoTipo", fields: [tipoId], references: [id])
+  moneda             Parametro?     @relation("IngresoMoneda", fields: [monedaId], references: [id])
+  estado             Parametro?     @relation("IngresoEstado", fields: [estadoId], references: [id])
+  aplicacionesCuotas IngresoCuota[]
+  aplicacionesGastos IngresoGasto[]
+
+  @@index([fechaIngreso])
+  @@index([clienteId])
+  @@index([casoId])
+}
+
+model IngresoGasto {
+  id               Int       @id @default(autoincrement())
+  ingresoId        Int
+  gastoId          Int
+  fechaAplicacion  DateTime // por defecto = ingreso.fechaIngreso
+  montoAplicadoARS Decimal   @db.Decimal(14, 2) // siempre en ARS
+  ingreso          Ingreso   @relation(fields: [ingresoId], references: [id])
+  gasto            Gasto     @relation(fields: [gastoId], references: [id])
+  activo           Boolean   @default(true)
+  createdAt        DateTime  @default(now())
+  createdBy        Int?
+  updatedAt        DateTime  @updatedAt
+  updatedBy        Int?
+  deletedAt        DateTime?
+  deletedBy        Int?
+
+  @@index([gastoId])
+  @@index([ingresoId])
+}
+
+model PlanPago {
+  id              Int       @id @default(autoincrement())
+  honorarioId     Int
+  clienteId       Int?
+  casoId          Int?
+  descripcion     String?
+  fechaInicio     DateTime?
+  periodicidadId  Int? // Parametro(categoria="PeriodicidadPlan")
+  montoCuotaJus   Decimal?  @db.Decimal(14, 4)
+  montoCuotaPesos Decimal?  @db.Decimal(14, 2)
+  valorJusRef     Decimal?  @db.Decimal(14, 4) // snapshot al crear el plan
+  activo          Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  createdBy       Int?
+  updatedAt       DateTime  @updatedAt
+  updatedBy       Int?
+  deletedAt       DateTime?
+  deletedBy       Int?
+
+  // Relaciones
+  honorario    Honorario  @relation(fields: [honorarioId], references: [id])
+  cliente      Cliente?   @relation(fields: [clienteId], references: [id])
+  caso         Caso?      @relation(fields: [casoId], references: [id])
+  periodicidad Parametro? @relation(fields: [periodicidadId], references: [id])
+
+  cuotas PlanCuota[]
+
+  @@index([honorarioId])
+  @@index([clienteId])
+  @@index([casoId])
+}
+
+model PlanCuota {
+  id          Int       @id @default(autoincrement())
+  planId      Int
+  numero      Int
+  vencimiento DateTime
+  montoJus    Decimal?  @db.Decimal(14, 4)
+  montoPesos  Decimal?  @db.Decimal(14, 2)
+  valorJusRef Decimal?  @db.Decimal(14, 4) // snapshot al crear la cuota
+  estadoId    Int? // Parametro(categoria="EstadoCuota": pendiente, parcial, pagada, vencida, condonada)
+  observacion String?
+  activo      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  createdBy   Int?
+  updatedAt   DateTime  @updatedAt
+  updatedBy   Int?
+  deletedAt   DateTime?
+  deletedBy   Int?
+
+  plan   PlanPago   @relation(fields: [planId], references: [id])
+  estado Parametro? @relation("EstadoCuota", fields: [estadoId], references: [id])
+
+  // Aplicaciones (Ingreso ↔ Cuota)
+  aplicaciones IngresoCuota[]
+
+  @@unique([planId, numero])
+  @@index([planId])
+  @@index([vencimiento])
+  @@index([estadoId])
+}
+
+model IngresoCuota {
+  id               Int      @id @default(autoincrement())
+  ingresoId        Int
+  cuotaId          Int
+  fechaAplicacion  DateTime
+  montoAplicadoARS Decimal  @db.Decimal(14, 2)
+  valorJusAlAplic  Decimal? @db.Decimal(14, 4)
+  montoAplicadoJUS Decimal? @db.Decimal(14, 4)
+
+  // Auditoría / soft-delete
+  activo    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  createdBy Int?
+  updatedAt DateTime  @updatedAt
+  updatedBy Int?
+  deletedAt DateTime?
+  deletedBy Int?
+  motivo    String?
+  nota      String?
+
+  tipoMovimientoId Int?
+  tipoMovimiento   Parametro?     @relation("TipoMovimientoIngresoCuota", fields: [tipoMovimientoId], references: [id])
+  ajusteMotivoId   Int?
+  ajusteMotivo     Parametro?     @relation("MotivoAjusteIngresoCuota", fields: [ajusteMotivoId], references: [id])
+  ajusteDeId       Int?
+  ajusteDe         IngresoCuota?  @relation("AjusteOrigen", fields: [ajusteDeId], references: [id], onDelete: SetNull)
+  ajustes          IngresoCuota[] @relation("AjusteOrigen")
+
+  ingreso Ingreso   @relation(fields: [ingresoId], references: [id])
+  cuota   PlanCuota @relation(fields: [cuotaId], references: [id])
+
+  @@index([ingresoId])
+  @@index([cuotaId])
+  @@index([tipoMovimientoId])
+  @@index([ajusteMotivoId])
+  @@index([ajusteDeId])
+}
+
+// Google Drive Attachments
+enum AdjuntoScope {
+  CLIENTE
+  CASO
+}
+
+model Adjunto {
+  id          Int          @id @default(autoincrement())
+  scope       AdjuntoScope // CLIENTE o CASO
+  scopeId     Int          // ID del Cliente o Caso
+  
+  nombre      String
+  descripcion String?
+  mime        String
+  sizeBytes   Int?
+
+  // Google Drive info
+  driveFileId     String   @unique
+  driveFolderId   String
+  driveWebView    String?  // link para ver en Drive
+  driveWebContent String?  // link para descargar
+
+  // Auditoría
+  subidoPorId Int?
+  subidoPor   Usuario? @relation("AdjuntosUsuario", fields: [subidoPorId], references: [id])
+  
+  // Relaciones: scopeId puede ser clienteId o casoId según el scope
+  // Se manejan a nivel de aplicación, no como FK de Prisma
+
+  creadoEn    DateTime @default(now())
+  eliminadoEn DateTime?
+
+  @@index([scope, scopeId, creadoEn])
+  @@index([subidoPorId])
+  @@index([driveFileId])
+}

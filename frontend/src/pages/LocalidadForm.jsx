@@ -1,0 +1,161 @@
+// src/pages/LocalidadForm.jsx
+import { useState, useEffect } from "react";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Box, Paper, TextField, Button, Typography, MenuItem, CircularProgress } from "@mui/material";
+import { enqueueSnackbar } from "notistack";
+import api from "../api/axios";
+
+const Row = ({ cols, children }) => (
+  <Box
+    sx={{
+      display: "grid",
+      gap: 2,
+      gridTemplateColumns: { xs: "1fr", md: cols },
+      alignItems: "start",
+      mb: { xs: 1.5, md: 2.5 },
+    }}
+  >
+    {children}
+  </Box>
+);
+
+const TF = (props) => <TextField fullWidth size="small" {...props} />;
+
+export default function LocalidadForm() {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const { id } = useParams();
+  const esEdicion = !!id;
+  const qc = useQueryClient();
+  
+  const categoriaId = searchParams.get('categoriaId') || 'VIRTUAL_LOCALIDAD';
+
+  const [formData, setFormData] = useState({
+    nombre: "",
+    provinciaId: "",
+  });
+
+  // Cargar provincias
+  const { data: provincias = [] } = useQuery({
+    queryKey: ["provincias"],
+    queryFn: () => api.get("/provincias").then((r) => r.data),
+  });
+
+  // Cargar localidad si es edición
+  const { data: localidadData, isLoading } = useQuery({
+    queryKey: ["localidad", id],
+    queryFn: () => api.get(`/localidades/${id}`).then((r) => r.data),
+    enabled: esEdicion,
+  });
+
+  // Cargar datos cuando lleguen del servidor
+  useEffect(() => {
+    if (localidadData && esEdicion) {
+      setFormData({
+        nombre: localidadData.nombre || "",
+        provinciaId: localidadData.provinciaId || "",
+      });
+    }
+  }, [localidadData, esEdicion]);
+
+  const saveMut = useMutation({
+    mutationFn: (data) => {
+      if (esEdicion) {
+        return api.put(`/localidades/${id}`, data).then((r) => r.data);
+      }
+      return api.post("/localidades", data).then((r) => r.data);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["parametros"] });
+      enqueueSnackbar(
+        `Localidad ${esEdicion ? "actualizada" : "creada"} correctamente`,
+        { variant: "success" }
+      );
+      navigate(`/configuracion?categoriaId=${categoriaId}`);
+    },
+    onError: (err) => {
+      const msg = err?.response?.data?.publicMessage || "Error al guardar localidad";
+      enqueueSnackbar(msg, { variant: "error" });
+    },
+  });
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (!formData.nombre || !formData.provinciaId) {
+      enqueueSnackbar("El nombre y provincia son requeridos", { variant: "warning" });
+      return;
+    }
+    saveMut.mutate(formData);
+  };
+
+  if (isLoading) {
+    return (
+      <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  return (
+    <Paper
+      elevation={0}
+      sx={{
+        mt: 2,
+        p: { xs: 1.5, md: 2 },
+        borderRadius: 3,
+        border: (t) => `1px solid ${t.palette.divider}`,
+      }}
+    >
+      <Box sx={{ mb: 2 }}>
+        <Typography variant="h6" sx={{ fontWeight: 700 }}>
+          {esEdicion ? "Editar localidad" : "Nueva localidad"}
+        </Typography>
+      </Box>
+
+      <Box component="form" noValidate onSubmit={handleSubmit}>
+        <Row cols="1fr 1fr">
+          <TF
+            name="nombre"
+            label="Nombre"
+            value={formData.nombre}
+            onChange={handleChange}
+            required
+          />
+          <TF
+            name="provinciaId"
+            label="Provincia"
+            value={formData.provinciaId}
+            onChange={handleChange}
+            select
+            required
+          >
+            <MenuItem value="">
+              <em>Seleccione una provincia</em>
+            </MenuItem>
+            {provincias.map((p) => (
+              <MenuItem key={p.id} value={p.id}>
+                {p.nombre} - {p.pais?.nombre}
+              </MenuItem>
+            ))}
+          </TF>
+        </Row>
+
+        <Box sx={{ mt: 3, display: "flex", gap: 1, justifyContent: "flex-end" }}>
+          <Button variant="outlined" onClick={() => navigate(`/configuracion?categoriaId=${categoriaId}`)} disabled={saveMut.isPending}>
+            Cancelar
+          </Button>
+          <Button type="submit" variant="contained" disabled={saveMut.isPending}>
+            {saveMut.isPending ? "Guardando..." : esEdicion ? "Guardar cambios" : "Crear"}
+          </Button>
+        </Box>
+      </Box>
+    </Paper>
+  );
+}
+

@@ -1,0 +1,16 @@
+{
+  "watch": ["src"],
+  "ignore": [
+    "node_modules",
+    ".wwebjs_cache",
+    "whatsapp-session",
+    "C:/lex-wa-session",
+    "/var/lib/lex-wa-session",
+    "tmp",
+    "logs"
+  ],
+  "ext": "js,json",
+  "delay": "200ms"
+}
+
+

@@ -1,0 +1,11 @@
+node_modules
+# Keep environment variables out of version control
+.env
+
+/generated/prisma
+
+# WhatsApp session (no subir al repo)
+whatsapp-session/
+
+# Google Drive credentials (NO SUBIR AL REPO)
+credentials.json
