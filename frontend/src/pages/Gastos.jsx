@@ -1,7 +1,7 @@
 // src/pages/Gastos.jsx
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { usePermisos } from "../auth/usePermissions";
 import {
   Paper, Table, TableHead, TableRow, TableCell, TableBody,
@@ -22,12 +22,12 @@ import * as XLSX from "xlsx";
 import ConfirmDialog from "../components/ConfirmDialog";
 
 import { listGastos, deleteGasto } from "../api/finanzas/gastos";
-import { formatCurrency, toISODateString } from "../utils/format";
+import { formatCurrency, toDMYLocal } from "../utils/format";
 
 /* ---------- helpers ---------- */
 function useDebounced(value, delay = 300) {
   const [debounced, setDebounced] = useState(value);
-  useMemo(() => {
+  useEffect(() => {
     const id = setTimeout(() => setDebounced(value), delay);
     return () => clearTimeout(id);
   }, [value, delay]);
@@ -55,7 +55,12 @@ const displayExpte = (caso) => {
     (caso.nroExpte ?? caso.expte ?? caso.numeroExpediente ?? caso.numero ?? "")
       .toString()
       .trim();
-  return n || (caso.id ? `#${caso.id}` : "-");
+  // Si no hay número de expediente, mostrar la carátula
+  if (!n) {
+    const caratula = (caso.caratula || "").trim();
+    return caratula || (caso.id ? `#${caso.id}` : "-");
+  }
+  return n;
 };
 
 const getClienteKey = (g) => {
@@ -63,8 +68,8 @@ const getClienteKey = (g) => {
   return s.normalize?.("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
 };
 
-// Fecha (por ahora mostramos fechaGasto)
-const fmtDate = (d) => (d ? toISODateString(d) : "-");
+// Fecha (formato día/mes/año)
+const fmtDate = (d) => (d ? toDMYLocal(d) : "-");
 
 // Total en ARS (usa calc.montoARS del backend si viene, si no, fallback cotización)
 const computeTotalARS = (g) => {
@@ -83,29 +88,69 @@ const getSaldoARS = (g) => {
   return Math.max(total - apl, 0);
 };
 
+const toInt = (v, def) => {
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) && n >= 0 ? n : def;
+};
+const toOrder = (v) => (v === "asc" ? "asc" : "desc");
+const toOrderBy = (v) => {
+  if (!v) return "fechaGasto";
+  return ["fechaGasto", "concepto", "cliente", "monto"].includes(v) ? v : "fechaGasto";
+};
+
 /* ---------- componente ---------- */
 export default function Gastos() {
   const nav = useNavigate();
+  const location = useLocation();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
+  const [searchParams, setSearchParams] = useSearchParams();
   
   // Verificaciones de permisos
   const { canCrear, canEditar, canEliminar } = usePermisos('FINANZAS');
 
-  // Estado UI
-  const [page, setPage] = useState(0);
-  const [pageSize, setPageSize] = useState(10);
-  const [search, setSearch] = useState("");
+  // Estado inicial tomado de la URL
+  const [page, setPage] = useState(toInt(searchParams.get("page"), 0));
+  const [pageSize, setPageSize] = useState(toInt(searchParams.get("pageSize"), 10));
+  const [search, setSearch] = useState(searchParams.get("search") ?? "");
   const debouncedSearch = useDebounced(search, 300);
+  const [orderBy, setOrderBy] = useState(toOrderBy(searchParams.get("orderBy")));
+  const [order, setOrder] = useState(toOrder(searchParams.get("order")));
 
   // Filtros simples
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
-  const [soloPendientes, setSoloPendientes] = useState(false);
+  const [from, setFrom] = useState(searchParams.get("from") ?? "");
+  const [to, setTo] = useState(searchParams.get("to") ?? "");
+  const [soloPendientes, setSoloPendientes] = useState(searchParams.get("soloPendientes") === "true");
 
-  // Orden (opciones: totalARS, saldoARS, cliente)
-  const [orderBy, setOrderBy] = useState("totalARS"); // "totalARS" | "saldoARS" | "cliente"
-  const [order, setOrder] = useState("desc");
+  // Mantener URL en sync
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (page) next.set("page", String(page));
+    if (pageSize !== 10) next.set("pageSize", String(pageSize));
+    if (debouncedSearch?.trim()) next.set("search", debouncedSearch.trim());
+    if (orderBy !== "fechaGasto") next.set("orderBy", orderBy);
+    if (order !== "asc") next.set("order", order);
+    if (from) next.set("from", from);
+    if (to) next.set("to", to);
+    if (soloPendientes) next.set("soloPendientes", "true");
+
+    const changed = next.toString() !== searchParams.toString();
+    if (changed) setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, pageSize, debouncedSearch, orderBy, order, from, to, soloPendientes]);
+
+  // Si cambian externamente los searchParams, actualizamos el estado local
+  useEffect(() => {
+    setPage(toInt(searchParams.get("page"), 0));
+    setPageSize(toInt(searchParams.get("pageSize"), 10));
+    setSearch(searchParams.get("search") ?? "");
+    setOrderBy(toOrderBy(searchParams.get("orderBy")));
+    setOrder(toOrder(searchParams.get("order")));
+    setFrom(searchParams.get("from") ?? "");
+    setTo(searchParams.get("to") ?? "");
+    setSoloPendientes(searchParams.get("soloPendientes") === "true");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams.toString()]);
 
   // Confirm eliminar
   const [confirm, setConfirm] = useState({ open: false, id: null, name: "" });
@@ -139,34 +184,62 @@ export default function Gastos() {
     const data = Array.isArray(rows) ? [...rows] : [];
     const dir = order === "asc" ? 1 : -1;
 
-    if (orderBy === "cliente") {
-      return data.sort((a, b) => {
-        const A = getClienteKey(a);
-        const B = getClienteKey(b);
-        if (!A && !B) return 0;
-        if (!A) return 1;
-        if (!B) return -1;
-        return A.localeCompare(B) * dir;
-      });
-    }
-
-    const getValue = (g) =>
-      orderBy === "saldoARS" ? getSaldoARS(g) : computeTotalARS(g);
-
     return data.sort((a, b) => {
-      const aN = Number(getValue(a));
-      const bN = Number(getValue(b));
-      const aNull = !Number.isFinite(aN);
-      const bNull = !Number.isFinite(bN);
-      if (aNull && bNull) return 0;
-      if (aNull) return 1;
-      if (bNull) return -1;
-      return (aN < bN ? -1 : 1) * dir;
+      let aVal, bVal;
+      
+      switch (orderBy) {
+        case "cliente": {
+          const A = getClienteKey(a);
+          const B = getClienteKey(b);
+          if (!A && !B) return 0;
+          if (!A) return 1;
+          if (!B) return -1;
+          return A.localeCompare(B) * dir;
+        }
+        case "caso": {
+          aVal = displayExpte(a.caso).toLowerCase();
+          bVal = displayExpte(b.caso).toLowerCase();
+          return aVal.localeCompare(bVal) * dir;
+        }
+        case "concepto": {
+          aVal = (a.concepto?.nombre || "").toLowerCase();
+          bVal = (b.concepto?.nombre || "").toLowerCase();
+          return aVal.localeCompare(bVal) * dir;
+        }
+        case "fechaGasto": {
+          aVal = a.fechaGasto ? new Date(a.fechaGasto).getTime() : 0;
+          bVal = b.fechaGasto ? new Date(b.fechaGasto).getTime() : 0;
+          return (aVal - bVal) * dir;
+        }
+        case "totalARS": {
+          aVal = computeTotalARS(a);
+          bVal = computeTotalARS(b);
+          if (aVal == null && bVal == null) return 0;
+          if (aVal == null) return 1;
+          if (bVal == null) return -1;
+          return (aVal - bVal) * dir;
+        }
+        case "aplicadoARS": {
+          aVal = getAplicadoARS(a);
+          bVal = getAplicadoARS(b);
+          return (aVal - bVal) * dir;
+        }
+        case "saldoARS": {
+          aVal = getSaldoARS(a);
+          bVal = getSaldoARS(b);
+          if (aVal == null && bVal == null) return 0;
+          if (aVal == null) return 1;
+          if (bVal == null) return -1;
+          return (aVal - bVal) * dir;
+        }
+        default:
+          return 0;
+      }
     });
   }, [rows, orderBy, order]);
 
   const handleSort = (prop) => {
-    if (!["totalARS", "saldoARS", "cliente"].includes(prop)) return;
+    if (!["totalARS", "saldoARS", "cliente", "caso", "concepto", "fechaGasto", "aplicadoARS"].includes(prop)) return;
     setPage(0);
     if (orderBy === prop) setOrder((prev) => (prev === "asc" ? "desc" : "asc"));
     else {
@@ -206,9 +279,9 @@ export default function Gastos() {
         "Monto": formatCurrency(g.monto, g.moneda?.codigo || "ARS"),
         "Moneda": g.moneda?.nombre || g.moneda?.codigo || "",
         "Cotización": g.cotizacionARS ? Number(g.cotizacionARS).toFixed(4) : "",
-        "Total ARS": formatCurrency(computeTotalARS(g), "ARS"),
-        "Aplicado ARS": formatCurrency(getAplicadoARS(g), "ARS"),
-        "Saldo ARS": formatCurrency(getSaldoARS(g), "ARS"),
+        "Importe": formatCurrency(computeTotalARS(g), "ARS"),
+        "Cobrado": formatCurrency(getAplicadoARS(g), "ARS"),
+        "Saldo": formatCurrency(getSaldoARS(g), "ARS"),
         "Cliente": displayCliente(g.cliente),
         "Caso": displayExpte(g.caso),
       }));
@@ -226,8 +299,8 @@ export default function Gastos() {
   };
 
   // Acciones
-  const crear = () => nav("/finanzas/gastos/nuevo", { state: { from: "/finanzas?tab=gastos" } });
-  const editar = (id) => nav(`/finanzas/gastos/editar/${id}`, { state: { from: "/finanzas?tab=gastos" } });
+  const crear = () => nav("/finanzas/gastos/nuevo", { state: { from: { pathname: "/finanzas", search: "?tab=gastos" } } });
+  const editar = (id) => nav(`/finanzas/gastos/editar/${id}`, { state: { from: { pathname: "/finanzas", search: "?tab=gastos" } } });
 
   /* ---------- Header (mobile y desktop) ---------- */
 
@@ -418,7 +491,7 @@ export default function Gastos() {
 
                     <Box sx={{ mt: 0.5, display: "flex", gap: 1, flexWrap: "wrap" }}>
                       {g.concepto?.nombre && <Chip size="small" variant="outlined" label={g.concepto.nombre} />}
-                      <Chip size="small" label={`Total: ${formatCurrency(total, "ARS")}`} />
+                      <Chip size="small" label={`Importe: ${formatCurrency(total, "ARS")}`} />
                       <Chip size="small" label={`Cobrado: ${formatCurrency(aplicado, "ARS")}`} />
                       <Chip
                         size="small"
@@ -509,10 +582,33 @@ export default function Gastos() {
               </TableSortLabel>
             </TableCell>
 
-            <TableCell sx={{ width: 220 }}>Descripción</TableCell>
-            <TableCell sx={{ width: 140 }}>Expte</TableCell>
-            <TableCell sx={{ width: 130 }}>Concepto</TableCell>
-            <TableCell sx={{ width: 130 }}>Fecha</TableCell>
+            <TableCell sx={{ width: 280 }} sortDirection={orderBy === "caso" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "caso"}
+                direction={orderBy === "caso" ? order : "asc"}
+                onClick={() => handleSort("caso")}
+              >
+                Expte
+              </TableSortLabel>
+            </TableCell>
+            <TableCell sx={{ width: 130 }} sortDirection={orderBy === "concepto" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "concepto"}
+                direction={orderBy === "concepto" ? order : "asc"}
+                onClick={() => handleSort("concepto")}
+              >
+                Concepto
+              </TableSortLabel>
+            </TableCell>
+            <TableCell sx={{ width: 130 }} sortDirection={orderBy === "fechaGasto" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "fechaGasto"}
+                direction={orderBy === "fechaGasto" ? order : "asc"}
+                onClick={() => handleSort("fechaGasto")}
+              >
+                Fecha
+              </TableSortLabel>
+            </TableCell>
 
             <TableCell sx={{ width: 160 }} sortDirection={orderBy === "totalARS" ? order : false} align="right">
               <TableSortLabel
@@ -520,11 +616,19 @@ export default function Gastos() {
                 direction={orderBy === "totalARS" ? order : "asc"}
                 onClick={() => handleSort("totalARS")}
               >
-                Total ARS
+                Importe
               </TableSortLabel>
             </TableCell>
 
-            <TableCell sx={{ width: 160 }} align="right">Aplicado ARS</TableCell>
+            <TableCell sx={{ width: 160 }} align="right" sortDirection={orderBy === "aplicadoARS" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "aplicadoARS"}
+                direction={orderBy === "aplicadoARS" ? order : "asc"}
+                onClick={() => handleSort("aplicadoARS")}
+              >
+                Cobrado
+              </TableSortLabel>
+            </TableCell>
 
             <TableCell sx={{ width: 160 }} sortDirection={orderBy === "saldoARS" ? order : false} align="center">
               <TableSortLabel
@@ -532,7 +636,7 @@ export default function Gastos() {
                 direction={orderBy === "saldoARS" ? order : "asc"}
                 onClick={() => handleSort("saldoARS")}
               >
-                Saldo ARS
+                Saldo
               </TableSortLabel>
             </TableCell>
 
@@ -554,7 +658,6 @@ export default function Gastos() {
             ? Array.from({ length: 8 }).map((_, i) => (
                 <TableRow key={`sk-${i}`}>
                   <TableCell><Skeleton width="80%" /></TableCell>
-                  <TableCell><Skeleton width="80%" /></TableCell>
                   <TableCell><Skeleton width="40%" /></TableCell>
                   <TableCell><Skeleton width="50%" /></TableCell>
                   <TableCell><Skeleton width="50%" /></TableCell>
@@ -575,12 +678,10 @@ export default function Gastos() {
                       {displayCliente(g.cliente)}
                     </TableCell>
 
-                    <TableCell sx={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {g.descripcion?.trim() || `Gasto #${g.id}`}
-                    </TableCell>
-
                     <TableCell>{displayExpte(g.caso)}</TableCell>
-                    <TableCell>{g.concepto?.nombre || "—"}</TableCell>
+                    <TableCell sx={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {g.concepto?.nombre || "—"}
+                    </TableCell>
                     <TableCell>{fmtDate(g.fechaGasto)}</TableCell>
 
                     <TableCell align="right">
@@ -624,7 +725,7 @@ export default function Gastos() {
 
           {!isFetching && rows.length === 0 && (
             <TableRow>
-              <TableCell colSpan={9}>
+              <TableCell colSpan={8}>
                 <Box sx={{ py: 6, textAlign: "center", opacity: 0.8 }}>
                   <Typography variant="body1" sx={{ mb: 1 }}>
                     No encontramos gastos para mostrar.

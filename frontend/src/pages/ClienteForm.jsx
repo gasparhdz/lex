@@ -34,7 +34,7 @@ async function fetchCliente(id) {
 async function fetchLocalidades({ queryKey }) {
   const [_k, { search }] = queryKey;
   const { data } = await api.get("/localidades", { params: { search } });
-  return data?.data ?? [];
+  return Array.isArray(data) ? data : [];
 }
 
 /* =================== Utils =================== */
@@ -362,7 +362,9 @@ export default function ClienteForm() {
 
   // Limpiar campos del otro tipo SOLO cuando el usuario cambie realmente el tipo
   useEffect(() => {
-    if (!hydratedRef.current) return; // aún no cargamos el form
+    // En edición, solo limpiar si ya hidratamos. En alta, siempre limpiar.
+    if (editMode && !hydratedRef.current) return;
+    
     const curr = String(tipoPersonaId || "");
     if (lastTipoRef.current === curr) return; // no hubo cambio real
     // actualizamos el last antes de limpiar para evitar bucles
@@ -378,7 +380,7 @@ export default function ClienteForm() {
       setValue("razonSocial", "", { shouldDirty: true });
       setValue("fechaInicioActividad", "", { shouldDirty: true });
     }
-  }, [tipoPersonaId, esJuridica, setValue]);
+  }, [tipoPersonaId, esJuridica, setValue, editMode]);
 
   // Autocompletar DNI desde CUIT (solo PF con CUIT válido)
   useEffect(() => {

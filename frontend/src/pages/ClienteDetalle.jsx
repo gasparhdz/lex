@@ -1,5 +1,5 @@
 // src/pages/ClienteDetalle.jsx
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useRef } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/axios";
@@ -47,6 +47,9 @@ import ClienteGastos from "../components/detalle-cliente/ClienteGastos";
 import ClienteNotas from "../components/detalle-cliente/ClienteNotas";
 import ClienteTimeline from "../components/detalle-cliente/ClienteTimeline";
 import ClienteAdjuntos from "../components/detalle-cliente/ClienteAdjuntos";
+
+// ⚠️ ADJUNTOS DESHABILITADOS TEMPORALMENTE
+const ADJUNTOS_ENABLED = false;
 
 /* ============== Fetcher ============== */
 async function fetchDetalleCliente({ queryKey }) {
@@ -111,6 +114,9 @@ export default function ClienteDetalle() {
   const initialTab = Number(sessionStorage.getItem("clienteTab") || 0);
   const [tab, setTab] = useState(initialTab);
   const [openContactos, setOpenContactos] = useState(true);
+  
+  // Ref para controlar el dialog de notas
+  const notasRef = useRef(null);
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["cliente-detalle", id],
@@ -518,7 +524,7 @@ export default function ClienteDetalle() {
             {canViewFinanzas && <Tab label={`Ingresos (${ingresos.length})`} id="tab-5" />}
             {canViewCasos && <Tab label="Notas" id="tab-6" />}
             {canViewCasos && <Tab label="Timeline" id="tab-7" />}
-            {canViewCasos && <Tab label="Adjuntos" id="tab-8" />}
+            {ADJUNTOS_ENABLED && canViewCasos && <Tab label="Adjuntos" id="tab-8" />}
           </Tabs>
 
           {((tab === 0 && canCrearCaso) || (tab === 1 && canCrearTarea) || (tab === 2 && canCrearEvento) || ((tab === 3 || tab === 4 || tab === 5) && canCrearFinanzas) && tab < 6) && (
@@ -554,6 +560,15 @@ export default function ClienteDetalle() {
                 </Button>
               </span>
             </Tooltip>
+          )}
+          {tab === 6 && (
+            <Button
+              variant="contained"
+              size="small"
+              onClick={() => notasRef.current?.abrirDialogNueva()}
+            >
+              + Nota
+            </Button>
           )}
         </Box>
 
@@ -668,7 +683,7 @@ export default function ClienteDetalle() {
               </TabPanel>
 
               <TabPanel value={tab} index={6}>
-                <ClienteNotas clienteId={Number(id)} />
+                <ClienteNotas ref={notasRef} clienteId={Number(id)} />
               </TabPanel>
 
               <TabPanel value={tab} index={7}>
@@ -681,9 +696,11 @@ export default function ClienteDetalle() {
                 />
               </TabPanel>
 
-              <TabPanel value={tab} index={8}>
-                <ClienteAdjuntos clienteId={Number(id)} />
-              </TabPanel>
+              {ADJUNTOS_ENABLED && (
+                <TabPanel value={tab} index={8}>
+                  <ClienteAdjuntos clienteId={Number(id)} />
+                </TabPanel>
+              )}
             </Box>
           </Paper>
       {/* Footer acciones */}

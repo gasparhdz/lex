@@ -126,7 +126,8 @@ model Parametro {
   ingresosComoEstado            Ingreso[]      @relation("IngresoEstado")
   gastosComoConcepto            Gasto[]        @relation("ConceptoGasto")
   gastosComoMoneda              Gasto[]        @relation("MonedaGasto")
-  PlanPago                      PlanPago[]
+  planPagosComoPeriodicidad     PlanPago[]     @relation("PlanPagoPeriodicidad")
+  planPagosComoPolitica         PlanPago[]     @relation("PlanPagoPoliticaJus")
   ingresoCuotasComoAjusteMotivo IngresoCuota[] @relation("MotivoAjusteIngresoCuota")
   ingresosCuotaTipoMovimiento   IngresoCuota[] @relation("TipoMovimientoIngresoCuota")
   // Estados de cuotas de planes (pendiente, parcial, pagada, vencida, condonada)
@@ -230,7 +231,7 @@ model Cliente {
   Gasto     Gasto[]
   Ingreso   Ingreso[]
   PlanPago  PlanPago[]
-  
+
   notas     ClienteNota[]
   historial ClienteHistorial[]
 }
@@ -260,10 +261,10 @@ model ClienteNota {
   cliente   Cliente @relation(fields: [clienteId], references: [id])
 
   contenido String
-  
-  createdAt DateTime @default(now())
+
+  createdAt DateTime  @default(now())
   createdBy Int?
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime  @updatedAt
   updatedBy Int?
   deletedAt DateTime?
   deletedBy Int?
@@ -278,9 +279,9 @@ model ClienteHistorial {
   cliente   Cliente @relation(fields: [clienteId], references: [id])
 
   campo         String
-  valorAnterior  String? @db.Text
-  valorNuevo     String? @db.Text
-  
+  valorAnterior String? @db.Text
+  valorNuevo    String? @db.Text
+
   createdAt DateTime @default(now())
   createdBy Int?
 
@@ -291,9 +292,9 @@ model ClienteHistorial {
 model Caso {
   id                    Int       @id @default(autoincrement())
   clienteId             Int
-  nroExpte              String
+  nroExpte              String?
   nroExpteNorm          String?
-  caratula              String
+  caratula              String?
   tipoId                Int
   descripcion           String?
   estadoId              Int?
@@ -304,7 +305,7 @@ model Caso {
 
   // Google Drive
   driveFolderId String? // carpeta del caso en Drive
-  numeroDrive   Int?    // número correlativo NN (01, 02, 03, etc.)
+  numeroDrive   Int? // número correlativo NN (01, 02, 03, etc.)
 
   activo    Boolean   @default(true)
   createdAt DateTime  @default(now())
@@ -327,7 +328,7 @@ model Caso {
   Gasto     Gasto[]
   Ingreso   Ingreso[]
   PlanPago  PlanPago[]
-  
+
   notas     CasoNota[]
   historial CasoHistorial[]
 
@@ -339,15 +340,15 @@ model Caso {
 }
 
 model CasoNota {
-  id        Int     @id @default(autoincrement())
-  casoId    Int
-  caso      Caso    @relation(fields: [casoId], references: [id])
+  id     Int  @id @default(autoincrement())
+  casoId Int
+  caso   Caso @relation(fields: [casoId], references: [id])
 
   contenido String
 
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
   createdBy Int?
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime  @updatedAt
   updatedBy Int?
   deletedAt DateTime?
   deletedBy Int?
@@ -357,9 +358,9 @@ model CasoNota {
 }
 
 model CasoHistorial {
-  id        Int     @id @default(autoincrement())
-  casoId    Int
-  caso      Caso    @relation(fields: [casoId], references: [id])
+  id     Int  @id @default(autoincrement())
+  casoId Int
+  caso   Caso @relation(fields: [casoId], references: [id])
 
   campo         String
   valorAnterior String? @db.Text
@@ -609,6 +610,7 @@ model PlanPago {
   descripcion     String?
   fechaInicio     DateTime?
   periodicidadId  Int? // Parametro(categoria="PeriodicidadPlan")
+  politicaJusId   Int? // Parametro(categoria="POLITICA_JUS")
   montoCuotaJus   Decimal?  @db.Decimal(14, 4)
   montoCuotaPesos Decimal?  @db.Decimal(14, 2)
   valorJusRef     Decimal?  @db.Decimal(14, 4) // snapshot al crear el plan
@@ -624,7 +626,8 @@ model PlanPago {
   honorario    Honorario  @relation(fields: [honorarioId], references: [id])
   cliente      Cliente?   @relation(fields: [clienteId], references: [id])
   caso         Caso?      @relation(fields: [casoId], references: [id])
-  periodicidad Parametro? @relation(fields: [periodicidadId], references: [id])
+  periodicidad Parametro? @relation("PlanPagoPeriodicidad", fields: [periodicidadId], references: [id])
+  politicaJus  Parametro? @relation("PlanPagoPoliticaJus", fields: [politicaJusId], references: [id])
 
   cuotas PlanCuota[]
 
@@ -708,29 +711,29 @@ enum AdjuntoScope {
 }
 
 model Adjunto {
-  id          Int          @id @default(autoincrement())
-  scope       AdjuntoScope // CLIENTE o CASO
-  scopeId     Int          // ID del Cliente o Caso
-  
+  id      Int          @id @default(autoincrement())
+  scope   AdjuntoScope // CLIENTE o CASO
+  scopeId Int // ID del Cliente o Caso
+
   nombre      String
   descripcion String?
   mime        String
   sizeBytes   Int?
 
   // Google Drive info
-  driveFileId     String   @unique
+  driveFileId     String  @unique
   driveFolderId   String
-  driveWebView    String?  // link para ver en Drive
-  driveWebContent String?  // link para descargar
+  driveWebView    String? // link para ver en Drive
+  driveWebContent String? // link para descargar
 
   // Auditoría
   subidoPorId Int?
   subidoPor   Usuario? @relation("AdjuntosUsuario", fields: [subidoPorId], references: [id])
-  
+
   // Relaciones: scopeId puede ser clienteId o casoId según el scope
   // Se manejan a nivel de aplicación, no como FK de Prisma
 
-  creadoEn    DateTime @default(now())
+  creadoEn    DateTime  @default(now())
   eliminadoEn DateTime?
 
   @@index([scope, scopeId, creadoEn])

@@ -1,13 +1,13 @@
 // src/pages/Honorarios.jsx
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { usePermisos } from "../auth/usePermissions";
 import {
   Paper, Table, TableHead, TableRow, TableCell, TableBody,
   Typography, Box, TextField, InputAdornment,
   TableSortLabel, TablePagination, Alert, Skeleton, Tooltip, Button, IconButton, Fab,
-  useMediaQuery, LinearProgress, Chip
+  useMediaQuery, LinearProgress, Chip, Checkbox, FormControlLabel
 } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
 import SearchIcon from "@mui/icons-material/Search";
@@ -22,12 +22,12 @@ import ConfirmDialog from "../components/ConfirmDialog";
 import api from "../api/axios";
 
 import { listHonorarios, getValorJusActual, deleteHonorario } from "../api/finanzas/honorarios";
-import { formatCurrency, toISODateString } from "../utils/format";
+import { formatCurrency, toDMYLocal } from "../utils/format";
 
 /* ---------- helpers ---------- */
 function useDebounced(value, delay = 300) {
   const [debounced, setDebounced] = useState(value);
-  useMemo(() => {
+  useEffect(() => {
     const id = setTimeout(() => setDebounced(value), delay);
     return () => clearTimeout(id);
   }, [value, delay]);
@@ -58,7 +58,12 @@ const displayExpte = (caso) => {
       "")
       .toString()
       .trim();
-  return n || (caso.id ? `#${caso.id}` : "-");
+  // Si no hay número de expediente, mostrar la carátula
+  if (!n) {
+    const caratula = (caso.caratula || "").trim();
+    return caratula || (caso.id ? `#${caso.id}` : "-");
+  }
+  return n;
 };
 const getClienteKey = (h) => {
   const s = displayCliente(h.cliente) || "";
@@ -151,28 +156,69 @@ const getSaldo = (h) => {
   return imp - cob;
 };
 
+const toInt = (v, def) => {
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) && n >= 0 ? n : def;
+};
+const toOrder = (v) => (v === "desc" ? "desc" : "asc");
+const toOrderBy = (v) => {
+  if (!v) return "fechaHonorario";
+  return ["fechaHonorario", "cliente"].includes(v) ? v : "fechaHonorario";
+};
+
 /* ---------- componente ---------- */
 export default function Honorarios() {
   const nav = useNavigate();
+  const location = useLocation();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
+  const [searchParams, setSearchParams] = useSearchParams();
   
   // Verificaciones de permisos
   const { canCrear, canEditar, canEliminar } = usePermisos('FINANZAS');
 
-  // Estado UI
-  const [page, setPage] = useState(0);
-  const [pageSize, setPageSize] = useState(10);
-  const [search, setSearch] = useState("");
+  // Estado inicial tomado de la URL
+  const [page, setPage] = useState(toInt(searchParams.get("page"), 0));
+  const [pageSize, setPageSize] = useState(toInt(searchParams.get("pageSize"), 10));
+  const [search, setSearch] = useState(searchParams.get("search") ?? "");
   const debouncedSearch = useDebounced(search, 300);
+  const [orderBy, setOrderBy] = useState(toOrderBy(searchParams.get("orderBy")));
+  const [order, setOrder] = useState(toOrder(searchParams.get("order")));
 
   // Filtros simples
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  const [from, setFrom] = useState(searchParams.get("from") ?? "");
+  const [to, setTo] = useState(searchParams.get("to") ?? "");
+  const [soloPendientes, setSoloPendientes] = useState(searchParams.get("soloPendientes") === "true");
 
-  // Orden (dejamos monto/saldo; quitamos fecha visualmente)
-  const [orderBy, setOrderBy] = useState("montoPesos"); // "montoPesos" | "saldo"
-  const [order, setOrder] = useState("desc");
+  // Mantener URL en sync
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (page) next.set("page", String(page));
+    if (pageSize !== 10) next.set("pageSize", String(pageSize));
+    if (debouncedSearch?.trim()) next.set("search", debouncedSearch.trim());
+    if (orderBy !== "fechaHonorario") next.set("orderBy", orderBy);
+    if (order !== "asc") next.set("order", order);
+    if (from) next.set("from", from);
+    if (to) next.set("to", to);
+    if (soloPendientes) next.set("soloPendientes", "true");
+
+    const changed = next.toString() !== searchParams.toString();
+    if (changed) setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, pageSize, debouncedSearch, orderBy, order, from, to, soloPendientes]);
+
+  // Si cambian externamente los searchParams, actualizamos el estado local
+  useEffect(() => {
+    setPage(toInt(searchParams.get("page"), 0));
+    setPageSize(toInt(searchParams.get("pageSize"), 10));
+    setSearch(searchParams.get("search") ?? "");
+    setOrderBy(toOrderBy(searchParams.get("orderBy")));
+    setOrder(toOrder(searchParams.get("order")));
+    setFrom(searchParams.get("from") ?? "");
+    setTo(searchParams.get("to") ?? "");
+    setSoloPendientes(searchParams.get("soloPendientes") === "true");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams.toString()]);
 
   // Confirm eliminar
   const [confirm, setConfirm] = useState({ open: false, id: null, name: "" });
@@ -187,8 +233,9 @@ export default function Honorarios() {
       to: to || undefined,
       sortBy: orderBy,
       sortDir: order,
+      soloPendientes: soloPendientes || undefined,
     }),
-    [page, pageSize, debouncedSearch, from, to, orderBy, order]
+    [page, pageSize, debouncedSearch, from, to, orderBy, order, soloPendientes]
   );
 
   const { data, isFetching, isError, error, refetch, isLoading } = useQuery({
@@ -213,35 +260,68 @@ export default function Honorarios() {
     const data = Array.isArray(rows) ? [...rows] : [];
     const dir = order === "asc" ? 1 : -1;
 
-    if (orderBy === "cliente") {
-      return data.sort((a, b) => {
-        const A = getClienteKey(a);
-        const B = getClienteKey(b);
-        if (!A && !B) return 0;
-        if (!A) return 1;
-        if (!B) return -1;
-        return A.localeCompare(B) * dir; // A–Z / Z–A
-      });
-    }
-
-    const getValue = (h) =>
-      orderBy === "saldo" ? getSaldoMostrado(h, valorJusHoy) : computeImporteARS(h);
-
     return data.sort((a, b) => {
-      const aN = Number(getValue(a));
-      const bN = Number(getValue(b));
-      const aNull = !Number.isFinite(aN);
-      const bNull = !Number.isFinite(bN);
-      if (aNull && bNull) return 0;
-      if (aNull) return 1;
-      if (bNull) return -1;
-      return (aN < bN ? -1 : 1) * dir;
+      let aVal, bVal;
+      
+      switch (orderBy) {
+        case "cliente": {
+          const A = getClienteKey(a);
+          const B = getClienteKey(b);
+          if (!A && !B) return 0;
+          if (!A) return 1;
+          if (!B) return -1;
+          return A.localeCompare(B) * dir;
+        }
+        case "caso": {
+          aVal = displayExpte(a.caso).toLowerCase();
+          bVal = displayExpte(b.caso).toLowerCase();
+          return aVal.localeCompare(bVal) * dir;
+        }
+        case "fechaRegulacion": {
+          aVal = a.fechaRegulacion ? new Date(a.fechaRegulacion).getTime() : 0;
+          bVal = b.fechaRegulacion ? new Date(b.fechaRegulacion).getTime() : 0;
+          return (aVal - bVal) * dir;
+        }
+        case "jus": {
+          aVal = Number(a.jus) || 0;
+          bVal = Number(b.jus) || 0;
+          return (aVal - bVal) * dir;
+        }
+        case "montoPesos": {
+          aVal = computeImporteARS(a);
+          bVal = computeImporteARS(b);
+          if (aVal == null && bVal == null) return 0;
+          if (aVal == null) return 1;
+          if (bVal == null) return -1;
+          return (aVal - bVal) * dir;
+        }
+        case "cobrado": {
+          aVal = getCobrado(a);
+          bVal = getCobrado(b);
+          return (aVal - bVal) * dir;
+        }
+        case "saldo": {
+          aVal = getSaldoMostrado(a, valorJusHoy);
+          bVal = getSaldoMostrado(b, valorJusHoy);
+          if (aVal == null && bVal == null) return 0;
+          if (aVal == null) return 1;
+          if (bVal == null) return -1;
+          return (aVal - bVal) * dir;
+        }
+        case "estado": {
+          aVal = (a.estado?.nombre || "").toLowerCase();
+          bVal = (b.estado?.nombre || "").toLowerCase();
+          return aVal.localeCompare(bVal) * dir;
+        }
+        default:
+          return 0;
+      }
     });
   }, [rows, orderBy, order, valorJusHoy]);
 
 
   const handleSort = (prop) => {
-    if (!["montoPesos", "saldo", "cliente"].includes(prop)) return;
+    if (!["montoPesos", "saldo", "cliente", "caso", "fechaRegulacion", "jus", "cobrado", "estado"].includes(prop)) return;
     setPage(0);
     if (orderBy === prop) setOrder((prev) => (prev === "asc" ? "desc" : "asc"));
     else { setOrderBy(prop); setOrder("asc"); }
@@ -299,8 +379,8 @@ export default function Honorarios() {
   };
 
   // Acciones (como en Tareas.jsx)
-  const crear = () => nav("/finanzas/honorarios/nuevo", { state: { from: "/finanzas?tab=honorarios" } });
-  const editar = (id) => nav(`/finanzas/honorarios/editar/${id}`, { state: { from: "/finanzas?tab=honorarios" } });
+  const crear = () => nav("/finanzas/honorarios/nuevo", { state: { from: location } });
+  const editar = (id) => nav(`/finanzas/honorarios/editar/${id}`, { state: { from: location } });
 
   /* ---------- Header (mobile y desktop) ---------- */
 
@@ -361,6 +441,20 @@ export default function Honorarios() {
             </Button>
           )}
         </Box>
+      </Box>
+
+      {/* Solo pendientes debajo */}
+      <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
+        <FormControlLabel
+          control={
+            <Checkbox
+              size="small"
+              checked={!!soloPendientes}
+              onChange={(e) => { setSoloPendientes(e.target.checked); setPage(0); }}
+            />
+          }
+          label="Solo pendientes"
+        />
       </Box>
     </Box>
   );
@@ -425,6 +519,17 @@ export default function Honorarios() {
             {order === "asc" ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />}
           </IconButton>
         </Box>
+
+        <FormControlLabel
+          control={
+            <Checkbox
+              size="small"
+              checked={!!soloPendientes}
+              onChange={(e) => { setSoloPendientes(e.target.checked); setPage(0); }}
+            />
+          }
+          label="Solo pendientes"
+        />
       </Box>
     </Box>
   );
@@ -555,8 +660,34 @@ export default function Honorarios() {
                 Cliente
               </TableSortLabel>
             </TableCell>
-            <TableCell sx={{ width: 160 }}>Expte</TableCell>
-            <TableCell sx={{ width: 130 }}>Moneda</TableCell>
+            <TableCell sx={{ width: 280 }} sortDirection={orderBy === "caso" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "caso"}
+                direction={orderBy === "caso" ? order : "asc"}
+                onClick={() => handleSort("caso")}
+              >
+                Expte
+              </TableSortLabel>
+            </TableCell>
+            <TableCell sx={{ width: 130 }} sortDirection={orderBy === "fechaRegulacion" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "fechaRegulacion"}
+                direction={orderBy === "fechaRegulacion" ? order : "asc"}
+                onClick={() => handleSort("fechaRegulacion")}
+              >
+                Fecha
+              </TableSortLabel>
+            </TableCell>
+
+            <TableCell sx={{ width: 140 }} align="right" sortDirection={orderBy === "jus" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "jus"}
+                direction={orderBy === "jus" ? order : "asc"}
+                onClick={() => handleSort("jus")}
+              >
+                Cant JUS
+              </TableSortLabel>
+            </TableCell>
 
             <TableCell sx={{ width: 150 }} sortDirection={orderBy === "montoPesos" ? order : false} align="right">
               <TableSortLabel
@@ -567,9 +698,15 @@ export default function Honorarios() {
                 Importe
               </TableSortLabel>
             </TableCell>
-
-            <TableCell sx={{ width: 140 }} align="right">Cant JUS</TableCell>
-            <TableCell sx={{ width: 140 }} align="right">Cobrado</TableCell>
+            <TableCell sx={{ width: 140 }} align="right" sortDirection={orderBy === "cobrado" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "cobrado"}
+                direction={orderBy === "cobrado" ? order : "asc"}
+                onClick={() => handleSort("cobrado")}
+              >
+                Cobrado
+              </TableSortLabel>
+            </TableCell>
 
             <TableCell sx={{ width: 150 }} sortDirection={orderBy === "saldo" ? order : false} align="center">
               <TableSortLabel
@@ -581,7 +718,15 @@ export default function Honorarios() {
               </TableSortLabel>
             </TableCell>
 
-            <TableCell sx={{ width: 140 }}>Estado</TableCell>
+            <TableCell sx={{ width: 140 }} sortDirection={orderBy === "estado" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "estado"}
+                direction={orderBy === "estado" ? order : "asc"}
+                onClick={() => handleSort("estado")}
+              >
+                Estado
+              </TableSortLabel>
+            </TableCell>
 
             <TableCell align="right" sx={{ width: 120, whiteSpace: "nowrap" }}>
               Acciones
@@ -602,9 +747,9 @@ export default function Honorarios() {
                 <TableRow key={`sk-${i}`}>
                   <TableCell><Skeleton width="80%" /></TableCell>
                   <TableCell><Skeleton width="50%" /></TableCell>
-                  <TableCell><Skeleton width="40%" /></TableCell>
-                  <TableCell align="right"><Skeleton width="60%" /></TableCell>
+                  <TableCell><Skeleton width="50%" /></TableCell>
                   <TableCell align="right"><Skeleton width="40%" /></TableCell>
+                  <TableCell align="right"><Skeleton width="60%" /></TableCell>
                   <TableCell align="right"><Skeleton width="60%" /></TableCell>
                   <TableCell align="right"><Skeleton width="60%" /></TableCell>
                   <TableCell><Skeleton width="40%" /></TableCell>
@@ -624,15 +769,14 @@ export default function Honorarios() {
                     </TableCell>
 
                     <TableCell>{displayExpte(h.caso)}</TableCell>
-
-                    <TableCell>{monedaLabel(h)}</TableCell>
-
-                    <TableCell align="right">
-                      {importe != null ? formatCurrency(importe, "ARS") : "—"}
-                    </TableCell>
+                    <TableCell>{h.fechaRegulacion ? toDMYLocal(h.fechaRegulacion) : "—"}</TableCell>
 
                     <TableCell align="right">
                       {cantJus != null ? cantJus : "—"}
+                    </TableCell>
+
+                    <TableCell align="right">
+                      {importe != null ? formatCurrency(importe, "ARS") : "—"}
                     </TableCell>
 
                     <TableCell align="right">

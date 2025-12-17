@@ -1,16 +1,20 @@
 import { z } from "zod";
 
+// Helper para convertir strings vacíos a null
+const stringToNull = z.string().trim().transform((val) => (val === "" ? null : val)).nullable().optional();
+
 export const casoBase = z.object({
   // Relaciones obligatorias
   clienteId: z.coerce.number().int().positive(),
   tipoId: z.coerce.number().int().positive(),
 
-  // Campos obligatorios
-  nroExpte: z.string().trim().min(1, "nroExpte es requerido"),
-  caratula: z.string().trim().min(1, "caratula es requerida"),
+  // Campos opcionales (para trámites sin expediente como ciudadanías)
+  // Convertir strings vacíos a null después del trim
+  nroExpte: stringToNull,
+  caratula: stringToNull,
 
   // Opcionales
-  descripcion: z.string().optional().nullable(),
+  descripcion: stringToNull,
   estadoId: z.coerce.number().int().positive().optional().nullable(),
   fechaEstado: z.coerce.date().optional().nullable(),
   radicacionId: z.coerce.number().int().positive().optional().nullable(),
@@ -28,6 +32,4 @@ export const crearCasoSchema = casoBase;
 export const actualizarCasoSchema = casoBase.partial({
   clienteId: true,
   tipoId: true,
-  nroExpte: true,
-  caratula: true,
 });

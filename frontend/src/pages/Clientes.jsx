@@ -47,12 +47,25 @@ const displayName = (c) => {
   return a || n || "Sin nombre";
 };
 
+const formatCUIT = (cuit) => {
+  if (!cuit) return "-";
+  // Remover cualquier carácter que no sea dígito
+  const digits = String(cuit).replace(/\D/g, "");
+  // Si no tiene 11 dígitos, retornar el valor original sin formatear
+  if (digits.length !== 11) return cuit;
+  // Formatear: XX-XX.XXX.XXX-X (formato estándar argentino)
+  return `${digits.slice(0, 2)}-${digits.slice(2, 4)}.${digits.slice(4, 7)}.${digits.slice(7, 10)}-${digits.slice(10)}`;
+};
+
 const toInt = (v, def) => {
   const n = Number.parseInt(v, 10);
   return Number.isFinite(n) && n >= 0 ? n : def;
 };
 const toOrder = (v) => (v === "desc" ? "desc" : "asc");
-const toOrderBy = (v) => (v === "cuit" ? "cuit" : "displayName");
+const toOrderBy = (v) => {
+  const allowed = ["displayName", "cuit", "email", "telCelular"];
+  return allowed.includes(v) ? v : "displayName";
+};
 
 /* ---------- componente ---------- */
 export default function Clientes() {
@@ -133,7 +146,7 @@ export default function Clientes() {
   const total = data?.total ?? 0;
 
   const handleSort = (prop) => {
-    if (!["displayName", "cuit"].includes(prop)) return;
+    if (!["displayName", "cuit", "email", "telCelular"].includes(prop)) return;
     setPage(0);
     if (orderBy === prop) setOrder((prev) => (prev === "asc" ? "desc" : "asc"));
     else {
@@ -164,7 +177,7 @@ export default function Clientes() {
       // Preparar datos para Excel
       const datos = todos.map((c) => ({
         "Nombre/Apellido": displayName(c),
-        "CUIT": c.cuit || "",
+        "CUIT": formatCUIT(c.cuit) !== "-" ? formatCUIT(c.cuit) : "",
         "Email": c.email || "",
         "Teléfono": c.telCelular || "",
         "Estado": c.activo ? "Activo" : "Inactivo",
@@ -368,7 +381,7 @@ export default function Clientes() {
                     {displayName(c)}
                   </Typography>
                   <Typography variant="body2" sx={{ opacity: 0.9, whiteSpace: "normal", wordBreak: "break-word" }}>
-                    CUIT: {c.cuit || "-"}
+                    CUIT: {formatCUIT(c.cuit)}
                   </Typography>
                   <Typography variant="body2" sx={{ opacity: 0.7, whiteSpace: "normal", wordBreak: "break-word" }}>
                     {c.email || "-"} • {c.telCelular || "-"}
@@ -467,9 +480,24 @@ export default function Clientes() {
               </TableSortLabel>
             </TableCell>
 
-            {/* Email y Tel. SIN orden */}
-            <TableCell sx={{ width: 260 }}>Email</TableCell>
-            <TableCell sx={{ width: 170 }}>Tel. Celular</TableCell>
+            <TableCell sx={{ width: 260 }} sortDirection={orderBy === "email" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "email"}
+                direction={orderBy === "email" ? order : "asc"}
+                onClick={() => handleSort("email")}
+              >
+                Email
+              </TableSortLabel>
+            </TableCell>
+            <TableCell sx={{ width: 170 }} sortDirection={orderBy === "telCelular" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "telCelular"}
+                direction={orderBy === "telCelular" ? order : "asc"}
+                onClick={() => handleSort("telCelular")}
+              >
+                Tel. Celular
+              </TableSortLabel>
+            </TableCell>
 
             <TableCell align="right" sx={{ width: 180 }}>
               Acciones
@@ -498,7 +526,7 @@ export default function Clientes() {
             : rows.map((c) => (
                 <TableRow key={c.id} hover>
                   <TableCell sx={{ fontWeight: 500 }}>{displayName(c)}</TableCell>
-                  <TableCell>{c.cuit || "-"}</TableCell>
+                  <TableCell>{formatCUIT(c.cuit)}</TableCell>
                   <TableCell>{c.email || "-"}</TableCell>
                   <TableCell>{c.telCelular || "-"}</TableCell>
                   <TableCell align="right">

@@ -4,6 +4,7 @@ import {
   crearIngresoSchema,
   actualizarIngresoSchema,
 } from "../../validators/finanzas/ingreso.schema.js";
+import { recalcularEstadoCuota } from "./ingreso-cuota.controller.js";
 
 /* ========================= Helpers ========================= */
 function parsePagination(req) {
@@ -45,15 +46,19 @@ const toNum = (x, d = 0) => {
   return Number.isFinite(n) ? n : d;
 };
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
+const round6 = (n) => Math.round(Number(n) * 1000000) / 1000000;
 
 /** Snapshot de ValorJUS para una fecha (o el último disponible). */
 async function findValorJusSnapshot(fecha) {
   const d = fecha instanceof Date ? fecha : new Date(fecha);
   let row = await prisma.valorJUS.findFirst({
-    where: { fecha: { lte: d } },
+    where: { deletedAt: null, activo: true, fecha: { lte: d } },
     orderBy: { fecha: "desc" },
   });
-  if (!row) row = await prisma.valorJUS.findFirst({ orderBy: { fecha: "desc" } });
+  if (!row) row = await prisma.valorJUS.findFirst({
+    where: { deletedAt: null, activo: true },
+    orderBy: { fecha: "desc" },
+  });
   return row?.valor ?? null;
 }
 
@@ -182,64 +187,6 @@ async function sumAplicadoEnCuota(tx, cuotaId, excludeId) {
     ars: toNum(rows._sum.montoAplicadoARS),
     jus: toNum(rows._sum.montoAplicadoJUS),
   };
-}
-const EST = { PENDIENTE:"PENDIENTE", PARCIAL:"PARCIAL", PAGADA:"PAGADA", VENCIDA:"VENCIDA", CONDONADA:"CONDONADA" };
-const EST_CAT_ID = 19;
-async function getEstadosMap(tx) {
-  const rows = await tx.parametro.findMany({
-    where: { categoriaId: EST_CAT_ID, activo: true },
-    select: { id: true, codigo: true, nombre: true },
-  });
-  const map = {};
-  for (const r of rows) {
-    if (r.codigo) map[String(r.codigo).trim().toUpperCase()] = r.id;
-    if (r.nombre) map[String(r.nombre).trim().toUpperCase()] = r.id;
-  }
-  return map;
-}
-async function recalcularEstadoCuota(tx, cuotaId) {
-  const cuota = await tx.planCuota.findFirst({
-    where: { id: cuotaId, deletedAt: null, activo: true },
-    select: { id: true, montoJus: true, montoPesos: true, vencimiento: true, estadoId: true },
-  });
-  if (!cuota) return;
-  const agg = await tx.ingresoCuota.aggregate({
-    _sum: { montoAplicadoARS: true, montoAplicadoJUS: true },
-    where: { cuotaId, deletedAt: null, activo: true },
-  });
-  const aplARS = Number(agg._sum.montoAplicadoARS || 0);
-  const aplJUS = Number(agg._sum.montoAplicadoJUS || 0);
-
-  const epsilonARS = 0.01;
-  const epsilonJUS = 1e-6;
-
-  let pagada = false;
-  if (Number(cuota.montoJus) > 0) {
-    const totalJUS = Number(cuota.montoJus);
-    pagada = aplJUS >= (totalJUS - epsilonJUS);
-  } else {
-    const totalARS = Number(cuota.montoPesos) || 0;
-    pagada = aplARS >= (totalARS - epsilonARS);
-  }
-
-  let estadoKey;
-  if (pagada) {
-    estadoKey = EST.PAGADA;
-  } else if (cuota.vencimiento && new Date(cuota.vencimiento) < new Date()) {
-    estadoKey = EST.VENCIDA;
-  } else if (aplARS > 0 || aplJUS > 0) {
-    estadoKey = EST.PARCIAL;
-  } else {
-    estadoKey = EST.PENDIENTE;
-  }
-
-  try {
-    const map = await getEstadosMap(tx);
-    const nuevoEstadoId = map[estadoKey] ?? (estadoKey === EST.PARCIAL ? map[EST.PENDIENTE] : null);
-    if (nuevoEstadoId && nuevoEstadoId !== cuota.estadoId) {
-      await tx.planCuota.update({ where: { id: cuotaId }, data: { estadoId: nuevoEstadoId } });
-    }
-  } catch {}
 }
 
 /* ========================= Listado / lectura ========================= */
@@ -481,8 +428,10 @@ export async function crear(req, res, next) {
           if (esCuotaJUS(cuota)) {
             const totalJUS = toNum(cuota.montoJus);
             const agg = await sumAplicadoEnCuota(tx, cuotaId);
-            const saldoJUS = round2(totalJUS - toNum(agg.jus));
+            // ✅ NO redondear saldoJUS aquí - mantener precisión hasta multiplicar por vj
+            const saldoJUS = totalJUS - toNum(agg.jus);
             if (!(vj > 0)) throw { status: 400, publicMessage: "No se pudo obtener el valor JUS para la fecha de aplicación" };
+            // ✅ Redondear solo al final, después de multiplicar
             maxCuotaAplicableARS = round2(Math.max(0, saldoJUS) * vj);
           } else {
             const totalARS = cuotaTotalARS(cuota);
@@ -495,14 +444,18 @@ export async function crear(req, res, next) {
           const montoFinal = Math.min(reqMontoARS, maxCuotaAplicableARS, saldoIngresoARS);
 
           if (montoFinal > 0.009) {
+            // ✅ Calcular montoAplicadoJUS ANTES de redondear montoAplicadoARS para mantener precisión
+            const montoAplicadoARSFinal = round2(montoFinal);
+            const montoAplicadoJUSFinal = vj ? round6(montoFinal / vj) : null;
+            
             const createdApp = await tx.ingresoCuota.create({
               data: {
                 ingresoId: createdRow.id,
                 cuotaId,
                 fechaAplicacion: fechaAplic,
-                montoAplicadoARS: round2(montoFinal),
+                montoAplicadoARS: montoAplicadoARSFinal,
                 valorJusAlAplic: vj || null,
-                montoAplicadoJUS: vj ? round2(montoFinal / vj) : null,
+                montoAplicadoJUS: montoAplicadoJUSFinal,
                 createdBy: req.user?.id ?? null,
               },
             });
@@ -635,10 +588,18 @@ export async function actualizarYReconciliar(req, res, next) {
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) return next({ status: 400, publicMessage: "ID inválido" });
 
-    const { selectedCuotaIds = [], ...body } = req.body || {};
+    const { selectedCuotaIds = [], aplicacionesGastos, ...body } = req.body || {};
     if (!Array.isArray(selectedCuotaIds)) {
       return next({ status: 400, publicMessage: "selectedCuotaIds debe ser un array" });
     }
+    // aplicacionesGastos es opcional: si no viene o es undefined, no se procesan los gastos
+    // Si viene como array (incluso vacío), se procesan los gastos
+    const procesarGastos = aplicacionesGastos !== undefined && Array.isArray(aplicacionesGastos);
+    if (aplicacionesGastos !== undefined && !Array.isArray(aplicacionesGastos)) {
+      return next({ status: 400, publicMessage: "aplicacionesGastos debe ser un array" });
+    }
+    // Normalizar aplicacionesGastos para evitar errores
+    const aplicacionesGastosArray = procesarGastos ? aplicacionesGastos : [];
 
     const exists = await prisma.ingreso.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
     if (!exists) return next({ status: 404, publicMessage: "Ingreso no encontrado" });
@@ -683,95 +644,359 @@ export async function actualizarYReconciliar(req, res, next) {
         },
       });
 
-      // === CAMBIO CLAVE ===
-      // 3) Desactivar TODAS las aplicaciones activas del ingreso (vamos a reconstruir)
-      const appsActivas = await tx.ingresoCuota.findMany({
+      // === NUEVA LÓGICA: Comparar base de datos con selección actual ===
+      // 3) Leer aplicaciones actuales de la base de datos
+      const appsCuotasActuales = await tx.ingresoCuota.findMany({
         where: { ingresoId: id, deletedAt: null, activo: true },
-        select: { id: true, cuotaId: true },
+        select: { id: true, cuotaId: true, montoAplicadoARS: true },
       });
 
-      if (appsActivas.length) {
-        await tx.ingresoCuota.updateMany({
-          where: { id: { in: appsActivas.map(a => a.id) } },
-          data: { activo: false, deletedAt: new Date(), deletedBy: req.user?.id ?? null },
-        });
-      }
-
-      // 4) Reconstruir solo sobre las cuotas seleccionadas, aplicando parcial si hace falta
-      const keepSet = new Set(selectedCuotaIds.map(Number).filter(n => Number.isFinite(n) && n > 0));
+      const appsGastosActuales = await tx.ingresoGasto.findMany({
+        where: { ingresoId: id, deletedAt: null, activo: true },
+        select: { id: true, gastoId: true, montoAplicadoARS: true },
+      });
 
       const vj = toNum(ingresoUpd.valorJusAlCobro) || (await findValorJusSnapshot(ingresoUpd.fechaIngreso));
       const ingresoTotal = ingresoTotalARS(ingresoUpd);
-      let aplicadoSesion = 0;
 
-      // Ordenar por vencimiento/numero
-      const cuotas = keepSet.size
-        ? await tx.planCuota.findMany({
-            where: { id: { in: [...keepSet] }, deletedAt: null, activo: true },
-            select: { id: true, numero: true, vencimiento: true, montoJus: true, montoPesos: true, valorJusRef: true },
-          })
-        : [];
-      const ordered = cuotas
-        .map(c => ({ ...c, vto: c.vencimiento ? new Date(c.vencimiento).getTime() : 0, num: Number(c.numero || 0) }))
-        .sort((a, b) => (a.vto !== b.vto ? a.vto - b.vto : a.num - b.num));
-
-      const touched = new Set();
-
-      const esCuotaJUS = (c) => (toNum(c.montoJus) > 0) && !(toNum(c.montoPesos) > 0);
-      const cuotaTotalARS = (c) => {
-        const pes = toNum(c.montoPesos);
-        if (pes > 0) return round2(pes);
-        const jus = toNum(c.montoJus);
-        const v   = toNum(c.valorJusRef);
-        return jus > 0 && v > 0 ? round2(jus * v) : 0;
-      };
-      const sumAplicadoEnCuota = async (cuotaId) => {
-        const agg = await tx.ingresoCuota.aggregate({
-          _sum: { montoAplicadoARS: true, montoAplicadoJUS: true },
-          where: { cuotaId, deletedAt: null, activo: true },
+      // 4) Procesar CUOTAS: comparar y aplicar cambios
+      const selectedCuotaIdsSet = new Set(selectedCuotaIds.map(Number).filter(n => Number.isFinite(n) && n > 0));
+      const cuotasActualesSet = new Set(appsCuotasActuales.map(a => a.cuotaId));
+      
+      // Eliminar cuotas que ya no están seleccionadas
+      const cuotasAEliminar = appsCuotasActuales.filter(a => !selectedCuotaIdsSet.has(a.cuotaId));
+      if (cuotasAEliminar.length > 0) {
+        await tx.ingresoCuota.updateMany({
+          where: { id: { in: cuotasAEliminar.map(a => a.id) } },
+          data: { activo: false, deletedAt: new Date(), deletedBy: req.user?.id ?? null },
         });
-        return { ars: toNum(agg._sum.montoAplicadoARS), jus: toNum(agg._sum.montoAplicadoJUS) };
-      };
-
-      for (const c of ordered) {
-        const saldoIngreso = round2(ingresoTotal - aplicadoSesion);
-        if (saldoIngreso <= 0.009) break;
-
-        // Saldo actual de la cuota (considerando otras aplicaciones de otros ingresos)
-        let maxCuotaARS;
-        if (esCuotaJUS(c)) {
-          const totalJUS = toNum(c.montoJus);
-          const agg = await sumAplicadoEnCuota(c.id);
-          const saldoJUS = round2(totalJUS - agg.jus);
-          if (!(vj > 0)) throw { status: 400, publicMessage: "No se pudo obtener el valor JUS" };
-          maxCuotaARS = round2(Math.max(0, saldoJUS) * vj);
-        } else {
-          const totalARS = cuotaTotalARS(c);
-          const agg = await sumAplicadoEnCuota(c.id);
-          maxCuotaARS = round2(totalARS - agg.ars);
-        }
-
-        const aplicar = Math.min(maxCuotaARS, saldoIngreso);
-        if (aplicar > 0.009) {
-          await tx.ingresoCuota.create({
-            data: {
-              ingresoId: id,
-              cuotaId: c.id,
-              fechaAplicacion: ingresoUpd.fechaIngreso,
-              montoAplicadoARS: round2(aplicar),
-              valorJusAlAplic: vj || null,
-              montoAplicadoJUS: vj ? round2(aplicar / vj) : null,
-              createdBy: req.user?.id ?? null,
-            },
-          });
-          aplicadoSesion = round2(aplicadoSesion + aplicar);
-          touched.add(c.id);
+        // Recalcular estado de cuotas eliminadas
+        for (const app of cuotasAEliminar) {
+          await recalcularEstadoCuota(tx, app.cuotaId);
         }
       }
 
-      // 5) Recalcular estado de todas las cuotas tocadas originalmente y las reconstruidas
-      const recalcularIds = new Set([...touched, ...appsActivas.map(a => a.cuotaId)]);
-      for (const cid of recalcularIds) {
+      // Calcular gastos aplicados actuales (después de eliminar los que se quitaron)
+      const gastosAplicadosARS = procesarGastos
+        ? aplicacionesGastosArray.reduce((sum, app) => {
+            const monto = toNum(app.monto || app.montoAplicadoARS || 0);
+            return round2(sum + monto);
+          }, 0)
+        : appsGastosActuales.reduce((sum, app) => round2(sum + toNum(app.montoAplicadoARS)), 0);
+
+      // Agregar/actualizar cuotas seleccionadas
+      const cuotasAAgregar = selectedCuotaIds.filter(cid => !cuotasActualesSet.has(Number(cid)));
+      if (cuotasAAgregar.length > 0) {
+        const cuotas = await tx.planCuota.findMany({
+          where: { id: { in: cuotasAAgregar.map(Number) }, deletedAt: null, activo: true },
+          select: { id: true, numero: true, vencimiento: true, montoJus: true, montoPesos: true, valorJusRef: true },
+        });
+        
+        const ordered = cuotas
+          .map(c => ({ ...c, vto: c.vencimiento ? new Date(c.vencimiento).getTime() : 0, num: Number(c.numero || 0) }))
+          .sort((a, b) => (a.vto !== b.vto ? a.vto - b.vto : a.num - b.num));
+
+        const esCuotaJUS = (c) => (toNum(c.montoJus) > 0) && !(toNum(c.montoPesos) > 0);
+        const cuotaTotalARS = (c) => {
+          const pes = toNum(c.montoPesos);
+          if (pes > 0) return round2(pes);
+          const jus = toNum(c.montoJus);
+          const v   = toNum(c.valorJusRef);
+          return jus > 0 && v > 0 ? round2(jus * v) : 0;
+        };
+        const sumAplicadoEnCuota = async (cuotaId) => {
+          const agg = await tx.ingresoCuota.aggregate({
+            _sum: { montoAplicadoARS: true, montoAplicadoJUS: true },
+            where: { cuotaId, deletedAt: null, activo: true },
+          });
+          return { ars: toNum(agg._sum.montoAplicadoARS), jus: toNum(agg._sum.montoAplicadoJUS) };
+        };
+
+        // ✅ Calcular lo ya aplicado a cuotas SIN redondear en cada iteración para mantener precisión
+        const aplicadoCuotasActualSinRedondear = appsCuotasActuales
+          .filter(a => selectedCuotaIdsSet.has(a.cuotaId))
+          .reduce((sum, a) => sum + toNum(a.montoAplicadoARS), 0);
+        const aplicadoCuotasActual = round2(aplicadoCuotasActualSinRedondear);
+        
+        // ✅ Mantener aplicadoSesion sin redondear durante el loop para mantener precisión
+        let aplicadoSesionSinRedondear = aplicadoCuotasActualSinRedondear;
+
+        for (const c of ordered) {
+          // ✅ Calcular saldoIngreso sin redondear primero para mantener precisión
+          const saldoIngresoSinRedondear = ingresoTotal - gastosAplicadosARS - aplicadoSesionSinRedondear;
+          const saldoIngreso = round2(saldoIngresoSinRedondear);
+          if (saldoIngreso <= 0.009) break;
+
+          let maxCuotaARSSinRedondear;
+          if (esCuotaJUS(c)) {
+            const totalJUS = toNum(c.montoJus);
+            const agg = await sumAplicadoEnCuota(c.id);
+            // ✅ IMPORTANTE: Calcular desde ARS en lugar de JUS para evitar errores de precisión
+            // El problema es que agg.jus puede estar redondeado incorrectamente en la BD
+            // Calcular el total ARS de la cuota y restar lo aplicado en ARS
+            const valorJusParaCalculo = toNum(c.valorJusRef) > 0 ? toNum(c.valorJusRef) : vj;
+            const totalCuotaARS = round2(totalJUS * valorJusParaCalculo);
+            const aplicadoARS = toNum(agg.ars);
+            // ✅ Calcular maxCuotaARS directamente desde ARS para evitar errores de precisión
+            maxCuotaARSSinRedondear = Math.max(0, totalCuotaARS - aplicadoARS);
+          } else {
+            const totalARS = cuotaTotalARS(c);
+            const agg = await sumAplicadoEnCuota(c.id);
+            // ✅ NO redondear aquí - mantener precisión hasta calcular aplicar
+            maxCuotaARSSinRedondear = totalARS - agg.ars;
+          }
+
+          // ✅ Calcular aplicar: usar el mínimo entre maxCuotaARS y saldoIngreso
+          // IMPORTANTE: Redondear ambos valores primero para evitar errores de precisión de punto flotante
+          const maxCuotaARSRedondeado = round2(maxCuotaARSSinRedondear);
+          const saldoIngresoRedondeado = round2(saldoIngresoSinRedondear);
+          const aplicar = Math.min(maxCuotaARSRedondeado, saldoIngresoRedondeado);
+          if (aplicar > 0.009) {
+            // ✅ IMPORTANTE: Usar el valor redondeado `aplicar` para calcular montoAplicadoJUS
+            // porque `aplicarSinRedondear` puede tener errores de precisión de punto flotante
+            // El valor redondeado `aplicar` es el que realmente se guarda, así que debe ser consistente
+            const montoAplicadoARSFinal = aplicar;
+            const montoAplicadoJUSFinal = vj ? round6(aplicar / vj) : null;
+            
+            await tx.ingresoCuota.create({
+              data: {
+                ingresoId: id,
+                cuotaId: c.id,
+                fechaAplicacion: ingresoUpd.fechaIngreso,
+                montoAplicadoARS: montoAplicadoARSFinal,
+                valorJusAlAplic: vj || null,
+                montoAplicadoJUS: montoAplicadoJUSFinal,
+                createdBy: req.user?.id ?? null,
+              },
+            });
+            // ✅ Actualizar aplicadoSesion sin redondear para mantener precisión en la siguiente iteración
+            // Usar el valor redondeado `aplicar` para mantener consistencia
+            aplicadoSesionSinRedondear = aplicadoSesionSinRedondear + aplicar;
+            await recalcularEstadoCuota(tx, c.id);
+          }
+        }
+      }
+
+      // 5) Procesar GASTOS: comparar y aplicar cambios
+      // Si se envían gastos, procesarlos; si no, mantener los existentes sin cambios
+      if (procesarGastos) {
+        // Validar que no exceda el ingreso total
+        const totalGastosEnviados = aplicacionesGastosArray.reduce((sum, app) => {
+          const monto = toNum(app.monto || app.montoAplicadoARS || 0);
+          return round2(sum + monto);
+        }, 0);
+        
+        if (totalGastosEnviados > ingresoTotal) {
+          throw { status: 400, publicMessage: `El total de gastos aplicados (${totalGastosEnviados}) excede el ingreso total (${ingresoTotal})` };
+        }
+
+        const gastosSeleccionadosSet = new Set(aplicacionesGastosArray.map(a => Number(a.gastoId)));
+        const gastosActualesSet = new Set(appsGastosActuales.map(a => a.gastoId));
+
+        // Eliminar gastos que ya no están seleccionados
+        const gastosAEliminar = appsGastosActuales.filter(a => !gastosSeleccionadosSet.has(a.gastoId));
+        if (gastosAEliminar.length > 0) {
+          await tx.ingresoGasto.updateMany({
+            where: { id: { in: gastosAEliminar.map(a => a.id) } },
+            data: { activo: false, deletedAt: new Date(), deletedBy: req.user?.id ?? null },
+          });
+        }
+
+        // Agregar gastos nuevos o actualizar montos de los existentes
+        for (const app of aplicacionesGastosArray) {
+          const gastoId = Number(app.gastoId);
+          const monto = toNum(app.monto || app.montoAplicadoARS || 0);
+          
+          if (!Number.isFinite(gastoId) || gastoId <= 0) continue;
+          if (!Number.isFinite(monto) || monto <= 0.009) continue;
+
+          const gasto = await tx.gasto.findFirst({
+            where: { id: gastoId, deletedAt: null, activo: true },
+            select: { id: true },
+          });
+          if (!gasto) continue;
+
+          const existe = appsGastosActuales.find(a => a.gastoId === gastoId);
+          if (existe) {
+            // Actualizar monto si cambió
+            if (Math.abs(toNum(existe.montoAplicadoARS) - monto) > 0.01) {
+              await tx.ingresoGasto.update({
+                where: { id: existe.id },
+                data: {
+                  montoAplicadoARS: round2(monto),
+                  updatedBy: req.user?.id ?? null,
+                },
+              });
+            }
+          } else {
+            // Crear nueva aplicación
+            await tx.ingresoGasto.create({
+              data: {
+                ingresoId: id,
+                gastoId,
+                fechaAplicacion: ingresoUpd.fechaIngreso,
+                montoAplicadoARS: round2(monto),
+                createdBy: req.user?.id ?? null,
+              },
+            });
+          }
+        }
+      }
+      // Si no se procesan gastos (procesarGastos = false), no hacer nada, mantener los existentes
+
+      // 6) Aplicar saldo disponible a cuotas seleccionadas (nuevas y existentes)
+      // Esto asegura que si queda saldo disponible (por ejemplo, al desmarcar un gasto),
+      // se aplique automáticamente a las cuotas seleccionadas
+      if (selectedCuotaIdsSet.size > 0) {
+        // Recalcular gastos aplicados después de procesar cambios
+        const gastosAplicadosFinal = await tx.ingresoGasto.aggregate({
+          _sum: { montoAplicadoARS: true },
+          where: { ingresoId: id, deletedAt: null, activo: true },
+        });
+        const totalGastosAplicados = round2(toNum(gastosAplicadosFinal._sum.montoAplicadoARS) || 0);
+
+        // Recalcular cuotas aplicadas después de procesar cambios
+        const cuotasAplicadasFinal = await tx.ingresoCuota.findMany({
+          where: { ingresoId: id, deletedAt: null, activo: true },
+          select: { id: true, cuotaId: true, montoAplicadoARS: true },
+        });
+        const totalCuotasAplicadas = cuotasAplicadasFinal.reduce(
+          (sum, a) => round2(sum + toNum(a.montoAplicadoARS)),
+          0
+        );
+
+        // Calcular saldo disponible
+        const saldoDisponible = round2(ingresoTotal - totalGastosAplicados - totalCuotasAplicadas);
+
+        // Si hay saldo disponible, aplicarlo a las cuotas seleccionadas que tengan saldo pendiente
+        if (saldoDisponible > 0.009) {
+          // Obtener todas las cuotas seleccionadas (nuevas y existentes)
+          const todasLasCuotasSeleccionadas = await tx.planCuota.findMany({
+            where: { id: { in: Array.from(selectedCuotaIdsSet) }, deletedAt: null, activo: true },
+            select: { id: true, numero: true, vencimiento: true, montoJus: true, montoPesos: true, valorJusRef: true },
+          });
+
+          const ordered = todasLasCuotasSeleccionadas
+            .map(c => ({ ...c, vto: c.vencimiento ? new Date(c.vencimiento).getTime() : 0, num: Number(c.numero || 0) }))
+            .sort((a, b) => (a.vto !== b.vto ? a.vto - b.vto : a.num - b.num));
+
+          const esCuotaJUS = (c) => (toNum(c.montoJus) > 0) && !(toNum(c.montoPesos) > 0);
+          const cuotaTotalARS = (c) => {
+            const pes = toNum(c.montoPesos);
+            if (pes > 0) return round2(pes);
+            const jus = toNum(c.montoJus);
+            const v   = toNum(c.valorJusRef);
+            return jus > 0 && v > 0 ? round2(jus * v) : 0;
+          };
+          const sumAplicadoEnCuota = async (cuotaId) => {
+            const agg = await tx.ingresoCuota.aggregate({
+              _sum: { montoAplicadoARS: true, montoAplicadoJUS: true },
+              where: { cuotaId, deletedAt: null, activo: true },
+            });
+            return { ars: toNum(agg._sum.montoAplicadoARS), jus: toNum(agg._sum.montoAplicadoJUS) };
+          };
+
+          let saldoRestante = saldoDisponible;
+
+          for (const c of ordered) {
+            if (saldoRestante <= 0.009) break;
+
+            // Calcular saldo pendiente de la cuota
+            let maxCuotaARSSinRedondear;
+            let totalCuotaARS;
+            if (esCuotaJUS(c)) {
+              const totalJUS = toNum(c.montoJus);
+              const agg = await sumAplicadoEnCuota(c.id);
+              // ✅ Redondear saldoJUS a 6 decimales para evitar errores de precisión de punto flotante
+              const saldoJUS = round6(totalJUS - agg.jus);
+              if (!(vj > 0)) continue; // Saltar si no hay valor JUS
+              // Para cuotas JUS, usar el valorJusRef de la cuota si existe (ya pagada parcialmente),
+              // sino usar el valor JUS del ingreso actual
+              const valorJusParaTotal = toNum(c.valorJusRef) > 0 ? toNum(c.valorJusRef) : vj;
+              totalCuotaARS = round2(totalJUS * valorJusParaTotal);
+              // ✅ Multiplicar saldoJUS redondeado por vj
+              maxCuotaARSSinRedondear = Math.max(0, saldoJUS) * vj;
+            } else {
+              totalCuotaARS = cuotaTotalARS(c);
+              const agg = await sumAplicadoEnCuota(c.id);
+              // ✅ NO redondear aquí - mantener precisión hasta calcular aplicar
+              maxCuotaARSSinRedondear = totalCuotaARS - agg.ars;
+            }
+
+            // ✅ Calcular aplicar sin redondear primero para mantener precisión
+            const aplicarSinRedondear = Math.min(maxCuotaARSSinRedondear, saldoRestante);
+            const aplicar = round2(aplicarSinRedondear);
+            if (aplicar > 0.009) {
+              // Verificar si ya existe una aplicación para esta cuota
+              const existeApp = await tx.ingresoCuota.findFirst({
+                where: {
+                  ingresoId: id,
+                  cuotaId: c.id,
+                  deletedAt: null,
+                  activo: true,
+                },
+                select: { id: true, montoAplicadoARS: true },
+              });
+
+              if (existeApp) {
+                // Actualizar aplicación existente sumando el saldo disponible
+                // Pero asegurarse de no exceder el total de la cuota
+                const montoActual = toNum(existeApp.montoAplicadoARS);
+                // Calcular el nuevo monto, pero limitarlo al total de la cuota
+                const montoTentativo = round2(montoActual + aplicar);
+                const nuevoMonto = Math.min(montoTentativo, totalCuotaARS);
+                
+                // Solo actualizar si el nuevo monto es mayor que el actual
+                if (nuevoMonto > montoActual + 0.01) {
+                  // ✅ IMPORTANTE: Usar el valor redondeado `nuevoMonto` para calcular montoAplicadoJUS
+                  // para mantener consistencia con el valor que realmente se guarda
+                  const montoAplicadoJUSFinal = vj ? round6(nuevoMonto / vj) : null;
+                  
+                  await tx.ingresoCuota.update({
+                    where: { id: existeApp.id },
+                    data: {
+                      montoAplicadoARS: nuevoMonto,
+                      montoAplicadoJUS: montoAplicadoJUSFinal,
+                      updatedBy: req.user?.id ?? null,
+                    },
+                  });
+                  // Ajustar el saldo restante según lo que realmente se aplicó
+                  const realmenteAplicado = round2(nuevoMonto - montoActual);
+                  saldoRestante = round2(saldoRestante - realmenteAplicado);
+                  await recalcularEstadoCuota(tx, c.id);
+                }
+              } else {
+                // Crear nueva aplicación
+                // ✅ IMPORTANTE: Usar el valor redondeado `aplicar` para calcular montoAplicadoJUS
+                // porque `aplicarSinRedondear` puede tener errores de precisión de punto flotante
+                const montoAplicadoARSFinal = aplicar;
+                const montoAplicadoJUSFinal = vj ? round6(aplicar / vj) : null;
+                
+                await tx.ingresoCuota.create({
+                  data: {
+                    ingresoId: id,
+                    cuotaId: c.id,
+                    fechaAplicacion: ingresoUpd.fechaIngreso,
+                    montoAplicadoARS: montoAplicadoARSFinal,
+                    valorJusAlAplic: vj || null,
+                    montoAplicadoJUS: montoAplicadoJUSFinal,
+                    createdBy: req.user?.id ?? null,
+                  },
+                });
+                saldoRestante = round2(saldoRestante - aplicar);
+                await recalcularEstadoCuota(tx, c.id);
+              }
+            }
+          }
+        }
+      }
+
+      // 7) Recalcular estado de todas las cuotas afectadas
+      const todasLasCuotasAfectadas = new Set([
+        ...selectedCuotaIds.map(Number),
+        ...appsCuotasActuales.map(a => a.cuotaId),
+      ]);
+      for (const cid of todasLasCuotasAfectadas) {
         await recalcularEstadoCuota(tx, Number(cid));
       }
 

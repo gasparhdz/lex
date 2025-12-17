@@ -64,14 +64,22 @@ export const listarAplicacionesCuotaQuerySchema = z
   .object({
     ingresoId: id.optional(),
     cuotaId: id.optional(),
+
+    ingreso_id: id.optional(),
+    cuota_id: id.optional(),
+
     page: z.coerce.number().int().min(1).default(1),
-    pageSize: z.coerce.number().int().min(1).max(100).default(20),
+    pageSize: z.coerce.number().int().min(1).max(500).default(20),
   })
+  .transform((v) => ({
+    ...v,
+    ingresoId: v.ingresoId ?? v.ingreso_id,
+    cuotaId: v.cuotaId ?? v.cuota_id,
+  }))
   .refine((v) => v.ingresoId || v.cuotaId, {
     message: "Debe indicar ingresoId o cuotaId",
     path: ["ingresoId"],
-  })
-  .strip();
+  });
 
 /**
  * Actualizar aplicación

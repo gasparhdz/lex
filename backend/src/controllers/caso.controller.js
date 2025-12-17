@@ -61,6 +61,10 @@ function buildOrderBy({ orderBy, order, sort }) {
       case "createdAt":
       case "fechaEstado":
         return [{ [orderBy]: dir }];
+      case "tipo":
+        return [{ tipo: { nombre: dir } }];
+      case "estado":
+        return [{ estado: { nombre: dir } }];
       default:
         return [{ createdAt: "desc" }];
     }
@@ -68,13 +72,19 @@ function buildOrderBy({ orderBy, order, sort }) {
 
   if (sort) {
     const parts = String(sort).split(",").map((x) => x.trim()).filter(Boolean);
-    const allow = new Set(["nroExpte", "caratula", "createdAt", "fechaEstado"]);
+    const allow = new Set(["nroExpte", "caratula", "createdAt", "fechaEstado", "tipo", "estado"]);
     const orderByArr = [];
     for (const p of parts) {
       const [field, dirRaw] = p.split(":");
       if (!field || !allow.has(field)) continue;
       const dir = (dirRaw || "asc").toLowerCase() === "desc" ? "desc" : "asc";
-      orderByArr.push({ [field]: dir });
+      if (field === "tipo") {
+        orderByArr.push({ tipo: { nombre: dir } });
+      } else if (field === "estado") {
+        orderByArr.push({ estado: { nombre: dir } });
+      } else {
+        orderByArr.push({ [field]: dir });
+      }
     }
     if (orderByArr.length) return orderByArr;
   }
@@ -117,12 +127,25 @@ function mapCasoDTO(dto = {}) {
 
   if ("clienteId" in dto) out.clienteId = intOrNull(dto.clienteId);
   if ("nroExpte" in dto) {
-    out.nroExpte = strOrNull(dto.nroExpte);
-    out.nroExpteNorm = normalizeExpte(dto.nroExpte);
+    const nroExpteVal = strOrNull(dto.nroExpte);
+    if (nroExpteVal !== null && nroExpteVal !== undefined) {
+      out.nroExpte = nroExpteVal;
+      out.nroExpteNorm = normalizeExpte(dto.nroExpte);
+    }
   }
-  if ("caratula" in dto) out.caratula = strOrNull(dto.caratula);
+  if ("caratula" in dto) {
+    const caratulaVal = strOrNull(dto.caratula);
+    if (caratulaVal !== null && caratulaVal !== undefined) {
+      out.caratula = caratulaVal;
+    }
+  }
   if ("tipoId" in dto) out.tipoId = intOrNull(dto.tipoId);
-  if ("descripcion" in dto) out.descripcion = strOrNull(dto.descripcion);
+  if ("descripcion" in dto) {
+    const descVal = strOrNull(dto.descripcion);
+    if (descVal !== null && descVal !== undefined) {
+      out.descripcion = descVal;
+    }
+  }
   if ("estadoId" in dto) out.estadoId = intOrNull(dto.estadoId);
   if ("fechaEstado" in dto) out.fechaEstado = toDateOrNull(dto.fechaEstado);
   if ("radicacionId" in dto) out.radicacionId = intOrNull(dto.radicacionId);
@@ -165,6 +188,10 @@ export async function listar(req, res, next) {
         { cliente: { nombre: dir } },
         { id: "asc" }, // desempate estable
       ];
+    } else if (orderByParam === "tipo") {
+      orderBy = [{ tipo: { nombre: dir } }];
+    } else if (orderByParam === "estado") {
+      orderBy = [{ estado: { nombre: dir } }];
     }
 
     const [total, data] = await Promise.all([
@@ -222,8 +249,9 @@ export async function crear(req, res, next) {
   try {
     const dto = mapCasoDTO(req.body);
 
-    if (!(dto.clienteId && dto.nroExpte && dto.caratula && dto.tipoId)) {
-      return next({ status: 400, publicMessage: "clienteId, nroExpte, caratula y tipoId son requeridos" });
+    // Solo clienteId y tipoId son requeridos ahora (nroExpte y caratula son opcionales)
+    if (!(dto.clienteId && dto.tipoId)) {
+      return next({ status: 400, publicMessage: "clienteId y tipoId son requeridos" });
     }
 
     const nuevo = await prisma.caso.create({

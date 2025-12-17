@@ -17,6 +17,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import pino from 'pino-http';
+import rateLimit from 'express-rate-limit';
 
 import authRoutes from './routes/auth.routes.js';
 import usuarioRoutes from './routes/usuario.routes.js';
@@ -71,6 +72,23 @@ app.use(pino({
     censor: '[REDACTED]',
   },
 }));
+
+// Rate Limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 1000, // máximo 1000 requests por IP en la ventana de tiempo (aumentado para desarrollo)
+  message: 'Demasiadas solicitudes desde esta IP, intentá de nuevo en unos minutos.',
+  standardHeaders: true, // Retornar rate limit info en headers
+  legacyHeaders: false, // Deshabilitar headers antiguos
+  // No aplicar rate limiting en desarrollo local
+  skip: (req) => {
+    const devIPs = ['127.0.0.1', '::1', '192.168.100.183', 'localhost'];
+    const ip = req.ip || req.connection.remoteAddress;
+    return devIPs.some(devIP => ip === devIP || ip?.includes(devIP));
+  },
+});
+
+app.use('/api/', limiter);
 
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
 

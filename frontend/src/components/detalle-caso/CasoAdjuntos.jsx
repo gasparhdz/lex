@@ -39,7 +39,14 @@ import { uploadAdjunto, listarAdjuntos, indexarAdjuntos, eliminarAdjunto, crearC
 import { formatBytes, formatFecha } from '../../utils/format';
 import api from '../../api/axios';
 
+// ⚠️ ADJUNTOS DESHABILITADOS TEMPORALMENTE
+const ADJUNTOS_ENABLED = false;
+
 export default function CasoAdjuntos({ casoId }) {
+  // Si los adjuntos están deshabilitados, no renderizar nada
+  if (!ADJUNTOS_ENABLED) {
+    return null;
+  }
   const { enqueueSnackbar } = useSnackbar();
   const queryClient = useQueryClient();
   const [uploading, setUploading] = useState(false);
@@ -273,8 +280,8 @@ export default function CasoAdjuntos({ casoId }) {
         ) : !adjuntos || adjuntos.length === 0 ? (
           <Alert severity="info">No hay archivos adjuntos. Sube un archivo o actualiza desde Drive.</Alert>
         ) : (
-          <TableContainer>
-            <Table>
+          <TableContainer sx={{ maxHeight: 400, overflowY: 'auto', overflowX: 'hidden' }}>
+            <Table stickyHeader size="small">
               <TableHead>
                 <TableRow>
                   <TableCell>Nombre</TableCell>

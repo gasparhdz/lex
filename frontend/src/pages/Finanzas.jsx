@@ -1,6 +1,6 @@
 // src/pages/Finanzas.jsx
-import { useEffect, useMemo, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Box, Tabs, Tab, Paper, Typography } from "@mui/material";
 import Ingresos from "./Ingresos";
 import Honorarios from "./Honorarios";
@@ -27,32 +27,39 @@ function TabPanel({ children, value, index, ...other }) {
 }
 
 export default function Finanzas() {
-  const location = useLocation();
-  const navigate = useNavigate();
-
-  const tabKeyFromUrl = useMemo(() => {
-    const q = new URLSearchParams(location.search);
-    return q.get("tab") || "honorarios";
-  }, [location.search]);
-
+  const [searchParams, setSearchParams] = useSearchParams();
+  
   const indexFromKey = (key) => {
     const i = TABS.findIndex((t) => t.key === key);
     return i >= 0 ? i : 0;
   };
+  
+  // Estado local inicializado desde la URL
+  const tabKeyFromUrl = searchParams.get("tab") || "honorarios";
+  const [tab, setTab] = useState(() => indexFromKey(tabKeyFromUrl));
 
-  const [tab, setTab] = useState(indexFromKey(tabKeyFromUrl));
-
+  // Sincronizar estado local con URL cuando cambia
   useEffect(() => {
-    setTab(indexFromKey(tabKeyFromUrl));
+    const tabKey = searchParams.get("tab");
+    if (tabKey) {
+      const newTab = indexFromKey(tabKey);
+      setTab(newTab);
+    }
+  }, [searchParams]);
+
+  // Inicializar URL si no tiene tab (solo una vez)
+  useEffect(() => {
+    if (!searchParams.get("tab")) {
+      setSearchParams({ tab: "honorarios" }, { replace: true });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabKeyFromUrl]);
+  }, []);
 
   const handleChange = (_e, newIndex) => {
+    // Actualizar estado local inmediatamente para feedback visual
     setTab(newIndex);
     const key = TABS[newIndex].key;
-    const q = new URLSearchParams(location.search);
-    q.set("tab", key);
-    navigate({ pathname: location.pathname, search: q.toString() }, { replace: true });
+    setSearchParams({ tab: key }, { replace: true });
   };
 
   return (

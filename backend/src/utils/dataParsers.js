@@ -53,6 +53,13 @@ export function round2(n) {
 }
 
 /**
+ * Redondea un número a 6 decimales (útil para cálculos JUS que requieren más precisión)
+ */
+export function round6(n) {
+  return Math.round(Number(n) * 1000000) / 1000000;
+}
+
+/**
  * Parsea paginación desde request query
  */
 export function parsePagination(req) {

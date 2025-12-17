@@ -74,6 +74,8 @@ const checkboxSx = (t) => {
    - value: [{ gastoId, monto }]   // selección controlada
    - onChange(nextValue)
    - noFrame?: boolean  // si true, no envuelve en Paper (evita doble borde)
+   - editMode?: boolean // si true, muestra todos los gastos (incluidos saldados); si false, solo pendientes
+   - gastosAplicadosAEsteIngreso?: number[] // IDs de gastos aplicados a este ingreso (para mostrar en edición aunque estén saldados)
 ========================================================= */
 export default function IngresoGastosForm({
   clienteId,
@@ -82,6 +84,8 @@ export default function IngresoGastosForm({
   value = [],
   onChange,
   noFrame = false,
+  editMode = false,
+  gastosAplicadosAEsteIngreso = [],
 }) {
   // paginación (sin buscador)
   const [page, setPage] = useState(0);
@@ -93,12 +97,13 @@ export default function IngresoGastosForm({
       pageSize,
       clienteId: clienteId ? Number(clienteId) : undefined,
       casoId: casoId ? Number(casoId) : undefined,
-      // En modo edición, NO filtrar solo pendientes para que los aplicados sigan viéndose
-      soloPendientes: false,
+      // En modo edición, mostrar todos los gastos (incluidos saldados) para que no desaparezcan al desmarcarlos
+      // En modo alta, solo mostrar pendientes
+      soloPendientes: !editMode,
       sortBy: "fechaGasto",
       sortDir: "desc",
     }),
-    [page, pageSize, clienteId, casoId]
+    [page, pageSize, clienteId, casoId, editMode]
   );
 
   /* --------- 1) Todos los gastos del cliente/caso (no solo pendientes en edición) --------- */
@@ -127,23 +132,36 @@ export default function IngresoGastosForm({
     [selIds, presentSet]
   );
 
+  // En modo edición, también incluir gastos aplicados a este ingreso que no están en la página actual
+  const missingAplicadosIds = useMemo(() => {
+    if (!editMode) return [];
+    const gastosAplicadosIds = gastosAplicadosAEsteIngreso.map(String);
+    return gastosAplicadosIds.filter((id) => !presentSet.has(id));
+  }, [editMode, gastosAplicadosAEsteIngreso, presentSet]);
+
+  // Combinar IDs faltantes: seleccionados + aplicados a este ingreso
+  const allMissingIds = useMemo(() => {
+    const combined = new Set([...missingSelIds, ...missingAplicadosIds]);
+    return Array.from(combined);
+  }, [missingSelIds, missingAplicadosIds]);
+
   const {
     data: selectedExtras = [],
     isFetching: fetchingExtras,
     isLoading: loadingExtras,
   } = useQuery({
-    queryKey: ["gastos-seleccionados-extra", missingSelIds],
+    queryKey: ["gastos-seleccionados-extra", allMissingIds],
     queryFn: async () => {
-      if (!missingSelIds.length) return [];
+      if (!allMissingIds.length) return [];
       const res = await Promise.all(
-        missingSelIds.map((id) =>
+        allMissingIds.map((id) =>
           getGasto(id).then((r) => r?.data ?? r).catch(() => null)
         )
       );
       return res.filter(Boolean);
     },
     // ✅ en edición funciona aunque no haya clienteId
-    enabled: missingSelIds.length > 0,
+    enabled: allMissingIds.length > 0,
     staleTime: 60_000,
     keepPreviousData: true,
   });
@@ -161,87 +179,188 @@ export default function IngresoGastosForm({
     
     // Consolidar sin duplicar
     const seen = new Set();
-    const result = [];
+    const allMerged = [];
     for (const r of [...selectedFirst, ...rest, ...extrasNotSelected]) {
       const id = String(r.id);
       if (!seen.has(id)) {
         seen.add(id);
-        result.push(r);
+        allMerged.push(r);
       }
     }
     
-    return result;
-  }, [allRows, selectedExtras, selIds]);
+    // En modo edición, filtrar para mostrar solo:
+    // - Gastos pendientes (saldoARS > 0)
+    // - Gastos aplicados a este ingreso (en gastosAplicadosAEsteIngreso)
+    // - Gastos seleccionados actualmente (en value)
+    if (editMode) {
+      const gastosAplicadosSet = new Set(gastosAplicadosAEsteIngreso.map(String));
+      const selIdsSet = new Set(selIds);
+      return allMerged.filter((g) => {
+        const id = String(g.id);
+        const saldo = saldoARSFromGasto(g);
+        // Mostrar si: está pendiente, está aplicado a este ingreso, o está seleccionado actualmente
+        return saldo > 0 || gastosAplicadosSet.has(id) || selIdsSet.has(id);
+      });
+    }
+    
+    return allMerged;
+  }, [allRows, selectedExtras, selIds, editMode, gastosAplicadosAEsteIngreso]);
 
   const isFetching = fetchingPend || fetchingExtras;
   const isLoading = (loadingPend || loadingExtras) && rows.length === 0;
 
   // Cache saldos para asignación
   const saldoCacheRef = useRef(new Map()); // id -> saldoARS
+  const isAllocatingRef = useRef(false); // Flag para evitar bucles infinitos
   useEffect(() => {
     for (const g of rows) {
       saldoCacheRef.current.set(String(g.id), saldoARSFromGasto(g));
     }
     // ⚠️ No forzar allocate si no hay selección aún (evita pisar estado del padre)
-    if (value?.length) {
+    // ⚠️ No forzar allocate si ya estamos en medio de una asignación (evita bucles infinitos)
+    if (value?.length && !isAllocatingRef.current) {
       allocate(value.map((v) => v.gastoId), /*preserve*/ !Number.isFinite(ingresoDisponibleARS));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows]);
 
-  // Reasignación automática (con modo "preservar montos" para edición)
+  // Reasignación automática según nuevas reglas:
+  // - Al marcar: aplicar TODO el disponible disponible (hasta el máximo del ítem)
+  // - Al desmarcar: reiniciar a 0
+  // - El disponible se calcula como: Ingreso - (suma de montos aplicados)
   function allocate(selectedIds, preserveExistingMontos = false) {
-    // mapa de montos actuales (value) por id
+    // Prevenir bucles infinitos
+    if (isAllocatingRef.current) return;
+    isAllocatingRef.current = true;
+    
+    try {
+      // Si preserveExistingMontos es true (modo edición sin ingresoDisponibleARS o cuando el disponible disminuye), preservar montos existentes
+      if (preserveExistingMontos) {
+        const currentById = new Map(
+          (value || []).map((v) => [String(v.gastoId), Number(v.monto)])
+        );
+        const next = selectedIds.map((rawId) => {
+          const id = String(rawId);
+          const existing = currentById.has(id) ? Number(currentById.get(id) || 0) : 0;
+          return { gastoId: rawId, monto: existing.toFixed(2) };
+        });
+        // IMPORTANTE: Crear una nueva referencia del array para que React detecte el cambio
+        const nextArray = [...next];
+        onChange?.(nextArray);
+        return;
+      }
+
+    // REGLA: Calcular el disponible actual
+    // ingresoDisponibleARS = Ingreso - Cuotas aplicadas (sin incluir gastos)
+    // Disponible para gastos = ingresoDisponibleARS - (suma de montos aplicados a gastos que NO están en selectedIds)
+    let disponibleActual = Number.isFinite(ingresoDisponibleARS)
+      ? Number(ingresoDisponibleARS)
+      : 0;
+
+    // Sumar los montos aplicados a los gastos que NO están en selectedIds (liberar esos montos)
     const currentById = new Map(
       (value || []).map((v) => [String(v.gastoId), Number(v.monto)])
     );
+    for (const [id, monto] of currentById) {
+      if (!selectedIds.includes(Number(id))) {
+        disponibleActual += monto; // Liberar el monto de los gastos desmarcados
+      }
+    }
+    
+    // Restar los montos de los gastos que SÍ están en selectedIds (liberar para recalcular)
+    for (const rawId of selectedIds) {
+      const id = String(rawId);
+      if (currentById.has(id)) {
+        const montoExistente = Number(currentById.get(id) || 0);
+        disponibleActual += montoExistente; // Liberar el monto existente para recalcular
+      }
+    }
 
-    let remaining = Number.isFinite(ingresoDisponibleARS)
-      ? Number(ingresoDisponibleARS)
-      : Infinity;
-
+    // REGLA: Aplicar TODO el disponible disponible a cada gasto marcado (hasta su máximo)
+    // ✅ IMPORTANTE: Mantener todos los gastos seleccionados, incluso si el disponible es 0
+    // Esto evita que se pierdan gastos cuando se selecciona una cuota
     const next = [];
     for (const rawId of selectedIds) {
       const id = String(rawId);
       const saldo = Number(saldoCacheRef.current.get(id) ?? 0);
-
-      let monto;
-      if (preserveExistingMontos && currentById.has(id)) {
-        // En edición: respetar lo que ya estaba, pero si es 0 o no existe, asignar el saldo completo
-        const existing = Number(currentById.get(id) || 0);
-        monto = existing > 0 ? Math.max(0, Math.min(saldo, existing)) : saldo;
-      } else {
-        // En alta o cuando hay tope disponible: asignar hasta saldo o remaining
-        const cap = Number.isFinite(remaining) ? remaining : saldo;
-        monto = Math.max(0, Math.min(saldo, cap));
+      const existing = currentById.get(id);
+      
+      // Aplicar el mínimo entre el disponible y el saldo del gasto
+      // ✅ Si hay disponible, distribuirlo. Si no hay disponible, mantener el monto existente
+      let montoAAplicar = 0;
+      if (disponibleActual > 0 && saldo > 0) {
+        // Hay disponible: aplicar lo máximo posible
+        montoAAplicar = Math.min(saldo, disponibleActual);
+        disponibleActual -= montoAAplicar;
+      } else if (existing !== undefined && existing > 0) {
+        // No hay disponible pero hay monto existente: preservarlo
+        montoAAplicar = existing;
       }
-
-      next.push({ gastoId: rawId, monto: monto.toFixed(2) });
-      if (Number.isFinite(remaining)) remaining -= monto;
+      // Si no hay disponible ni monto existente, montoAAplicar queda en 0
+      next.push({ gastoId: rawId, monto: montoAAplicar.toFixed(2) });
     }
 
-    const sameLen = next.length === value.length;
+    // IMPORTANTE: Siempre crear una nueva referencia del array para que React detecte el cambio
+    const nextArray = [...next];
+    
+    // Comparar normalizando montos (pueden venir como string o number)
+    const normalize = (arr) => {
+      if (!Array.isArray(arr)) return [];
+      return arr
+        .map((a) => ({
+          gastoId: Number(a.gastoId),
+          monto: Number(String(a.monto || 0).replace(/,/g, ".")),
+        }))
+        .sort((a, b) => a.gastoId - b.gastoId);
+    };
+    const nextNorm = normalize(nextArray);
+    const valueNorm = normalize(value || []);
     const same =
-      sameLen &&
-      next.every(
-        (a, i) =>
-          String(a.gastoId) === String(value[i].gastoId) &&
-          String(a.monto) === String(value[i].monto)
-      );
-    if (!same) onChange?.(next);
+      nextNorm.length === valueNorm.length &&
+      nextNorm.every((a, i) => {
+        const b = valueNorm[i];
+        return a.gastoId === b.gastoId && Math.abs(a.monto - b.monto) < 0.01; // tolerancia para decimales
+      });
+    // IMPORTANTE: Siempre llamar a onChange con una nueva referencia del array
+    // Esto asegura que React detecte el cambio y actualice los totales
+    // ✅ Siempre llamar onChange si hay gastos seleccionados, incluso si los montos no cambiaron
+    // Esto asegura que el estado se actualice correctamente cuando se seleccionan múltiples gastos
+    if (nextArray.length > 0 || !same || nextArray.length !== (value?.length || 0)) {
+      onChange?.(nextArray);
+    }
+    } finally {
+      // Liberar el flag después de un pequeño delay para permitir que los efectos se completen
+      setTimeout(() => {
+        isAllocatingRef.current = false;
+      }, 0);
+    }
   }
 
+  // Ref para rastrear el último valor de ingresoDisponibleARS que procesamos
+  const lastDisponibleRef = useRef(ingresoDisponibleARS);
+  
   useEffect(() => {
-    // Si cambia el tope, recalculamos.
-    // Si el tope no es finito (edición), preservamos montos existentes.
-    if (value?.length) {
+    // Solo recalcular si el disponible cambió Y no estamos en medio de una asignación
+    // Y el cambio es significativo (más de 0.01 de diferencia)
+    const disponibleCambio = Math.abs((ingresoDisponibleARS || 0) - (lastDisponibleRef.current || 0));
+    // ✅ En modo edición, preservar montos existentes cuando el disponible cambia
+    // Solo recalcular si el disponible AUMENTA (hay más disponible para distribuir)
+    const disponibleAumento = (ingresoDisponibleARS || 0) > (lastDisponibleRef.current || 0);
+    if (disponibleCambio > 0.01 && value?.length && !isAllocatingRef.current) {
+      lastDisponibleRef.current = ingresoDisponibleARS;
+      // ✅ Si el disponible disminuyó (se seleccionó una cuota), preservar montos existentes
+      // Si el disponible aumentó (se deseleccionó una cuota), recalcular para distribuir el nuevo disponible
+      const preserveMontos = editMode && !disponibleAumento;
       allocate(
         value.map((v) => v.gastoId),
-        /*preserveExistingMontos*/ !Number.isFinite(ingresoDisponibleARS)
+        preserveMontos
       );
+    } else if (disponibleCambio <= 0.01) {
+      // Actualizar la referencia incluso si no recalculamos
+      lastDisponibleRef.current = ingresoDisponibleARS;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ingresoDisponibleARS]);
+  }, [ingresoDisponibleARS, editMode]);
 
   // selección
   const selSet = useMemo(() => new Set(selIds.map(String)), [selIds]);
@@ -251,7 +370,8 @@ export default function IngresoGastosForm({
 
     if (selSet.has(key)) {
       // Desmarcar: eliminar de la lista
-      const next = value.filter((v) => String(v.gastoId) !== key);
+      // IMPORTANTE: Crear una nueva referencia del array para que React detecte el cambio
+      const next = [...value.filter((v) => String(v.gastoId) !== key)];
       onChange?.(next);
     } else {
       // Marcar: agregar a la lista
@@ -360,6 +480,14 @@ export default function IngresoGastosForm({
                   const total = totalARSFromGasto(g);
                   const saldo = saldoARSFromGasto(g);
 
+                  // ✅ Calcular si el gasto debe estar deshabilitado
+                  // Deshabilitar si:
+                  // 1. El gasto no está seleccionado Y
+                  // 2. El disponible es 0 o menor que el saldo del gasto
+                  const disponibleActual = Number.isFinite(ingresoDisponibleARS) ? Number(ingresoDisponibleARS) : 0;
+                  const saldoGasto = saldoARSFromGasto(g);
+                  const disabled = !checked && (disponibleActual <= 0 || disponibleActual < saldoGasto);
+
                   return (
                     // ⛔ No seteamos fondo acá (Honorarios tampoco lo hace en el detalle),
                     // dejamos que el tema maneje el hover y fondo base.
@@ -370,6 +498,7 @@ export default function IngresoGastosForm({
                           color="primary"
                           sx={(t) => checkboxSx(t)}
                           checked={checked}
+                          disabled={disabled}
                           onChange={() => toggleRow(g)}
                         />
                       </TableCell>
@@ -420,3 +549,4 @@ export default function IngresoGastosForm({
     </Wrapper>
   );
 }
+

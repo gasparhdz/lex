@@ -5,7 +5,15 @@ import { CloudUpload as CloudUploadIcon } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
 import { uploadAdjunto } from '../../api/adjuntos';
 
+// ⚠️ ADJUNTOS DESHABILITADOS TEMPORALMENTE
+const ADJUNTOS_ENABLED = false;
+
 export default function UploadAdjuntoButton({ clienteId, casoId, onUploadSuccess, disabled }) {
+  // Si los adjuntos están deshabilitados, no renderizar nada
+  if (!ADJUNTOS_ENABLED) {
+    return null;
+  }
+
   const { enqueueSnackbar } = useSnackbar();
   const [uploading, setUploading] = useState(false);
 

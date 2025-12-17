@@ -42,6 +42,22 @@ const tareaBase = z
         path: ["completada"],
       });
     }
+    // fechaLimite no puede ser anterior a la fecha actual
+    if (val.fechaLimite && val.fechaLimite < new Date()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "La fecha límite no puede ser anterior a la fecha actual",
+        path: ["fechaLimite"],
+      });
+    }
+    // recordatorio no puede ser posterior a fechaLimite
+    if (val.recordatorio && val.fechaLimite && val.recordatorio > val.fechaLimite) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "El recordatorio no puede ser posterior a la fecha límite",
+        path: ["recordatorio"],
+      });
+    }
   });
 
 // Crear requiere los obligatorios (título)

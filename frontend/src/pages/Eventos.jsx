@@ -1,7 +1,7 @@
 // src/pages/Eventos.jsx
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import api from "../api/axios";
 import { usePermisos } from "../auth/usePermissions";
 import {
@@ -25,7 +25,7 @@ import * as XLSX from "xlsx";
 /* ---------- helpers ---------- */
 function useDebounced(value, delay = 300) {
   const [debounced, setDebounced] = useState(value);
-  useMemo(() => {
+  useEffect(() => {
     const id = setTimeout(() => setDebounced(value), delay);
     return () => clearTimeout(id);
   }, [value, delay]);
@@ -113,28 +113,66 @@ function colorEstado(key) {
   }
 }
 
+const toInt = (v, def) => {
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) && n >= 0 ? n : def;
+};
+const toOrder = (v) => (v === "desc" ? "desc" : "asc");
+const toOrderBy = (v) => {
+  if (!v) return "fechaInicio";
+  return ["fechaInicio", "descripcion", "cliente", "caso", "tipo", "estado"].includes(v) ? v : "fechaInicio";
+};
+
 /* ---------- componente ---------- */
 export default function Eventos() {
   const nav = useNavigate();
+  const location = useLocation();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
+  const [searchParams, setSearchParams] = useSearchParams();
   const { canCrear, canEditar, canEliminar } = usePermisos('EVENTOS');
 
-  // Estado UI
-  const [page, setPage] = useState(0);
-  const [pageSize, setPageSize] = useState(10);
-  const [search, setSearch] = useState("");
+  // Estado inicial tomado de la URL
+  const [page, setPage] = useState(toInt(searchParams.get("page"), 0));
+  const [pageSize, setPageSize] = useState(toInt(searchParams.get("pageSize"), 10));
+  const [search, setSearch] = useState(searchParams.get("search") ?? "");
   const debouncedSearch = useDebounced(search, 300);
-
+  const [orderBy, setOrderBy] = useState(toOrderBy(searchParams.get("orderBy")));
+  const [order, setOrder] = useState(toOrder(searchParams.get("order")));
+  
   // Filtros
-  const [tipoId, setTipoId] = useState("");     // "" = todos
-  const [estadoId, setEstadoId] = useState(""); // "" = todos
+  const [tipoId, setTipoId] = useState(searchParams.get("tipoId") ?? "");     // "" = todos
+  const [estadoId, setEstadoId] = useState(searchParams.get("estadoId") ?? ""); // "" = todos
   const { data: tipos = [] } = useQuery({ queryKey: ["tipos-evento"], queryFn: fetchTiposEvento, staleTime: 5 * 60 * 1000 });
   const { data: estados = [] } = useQuery({ queryKey: ["estados-evento"], queryFn: fetchEstadosEvento, staleTime: 5 * 60 * 1000 });
 
-  // Orden
-  const [orderBy, setOrderBy] = useState("fechaInicio");
-  const [order, setOrder] = useState("asc");
+  // Mantener URL en sync
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (page) next.set("page", String(page));
+    if (pageSize !== 10) next.set("pageSize", String(pageSize));
+    if (debouncedSearch?.trim()) next.set("search", debouncedSearch.trim());
+    if (orderBy !== "fechaInicio") next.set("orderBy", orderBy);
+    if (order !== "asc") next.set("order", order);
+    if (tipoId) next.set("tipoId", tipoId);
+    if (estadoId) next.set("estadoId", estadoId);
+
+    const changed = next.toString() !== searchParams.toString();
+    if (changed) setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, pageSize, debouncedSearch, orderBy, order, tipoId, estadoId]);
+
+  // Si cambian externamente los searchParams, actualizamos el estado local
+  useEffect(() => {
+    setPage(toInt(searchParams.get("page"), 0));
+    setPageSize(toInt(searchParams.get("pageSize"), 10));
+    setSearch(searchParams.get("search") ?? "");
+    setOrderBy(toOrderBy(searchParams.get("orderBy")));
+    setOrder(toOrder(searchParams.get("order")));
+    setTipoId(searchParams.get("tipoId") ?? "");
+    setEstadoId(searchParams.get("estadoId") ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams.toString()]);
 
   const [deletingId, setDeletingId] = useState(null);
   const [confirm, setConfirm] = useState({ open: false, id: null, name: "" });
@@ -163,7 +201,7 @@ export default function Eventos() {
   const total = data?.total ?? 0;
 
   const handleSort = (prop) => {
-    if (!["fechaInicio", "descripcion", "createdAt"].includes(prop)) return;
+    if (!["fechaInicio", "descripcion", "cliente", "caso", "tipo", "estado"].includes(prop)) return;
     setPage(0);
     if (orderBy === prop) setOrder((prev) => (prev === "asc" ? "desc" : "asc"));
     else {
@@ -179,7 +217,7 @@ export default function Eventos() {
   };
 
   // Acciones
-  const editar = (id) => nav(`/eventos/editar/${id}`, { state: { from: "/eventos" } });
+  const editar = (id) => nav(`/eventos/editar/${id}`, { state: { from: location } });
   const pedirConfirmarEliminar = (ev) => {
     const nombre = ev.descripcion?.trim() || ev.tipo?.nombre || ev.tipo?.codigo || `Evento #${ev.id}`;
     setConfirm({ open: true, id: ev.id, name: nombre });
@@ -531,11 +569,43 @@ export default function Eventos() {
               </TableSortLabel>
             </TableCell>
 
-            <TableCell sx={{ width: 200 }}>Cliente</TableCell>
-            <TableCell sx={{ width: 130 }}>Expte</TableCell>
+            <TableCell sx={{ width: 200 }} sortDirection={orderBy === "cliente" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "cliente"}
+                direction={orderBy === "cliente" ? order : "asc"}
+                onClick={() => handleSort("cliente")}
+              >
+                Cliente
+              </TableSortLabel>
+            </TableCell>
+            <TableCell sx={{ width: 130 }} sortDirection={orderBy === "caso" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "caso"}
+                direction={orderBy === "caso" ? order : "asc"}
+                onClick={() => handleSort("caso")}
+              >
+                Expte
+              </TableSortLabel>
+            </TableCell>
 
-            <TableCell sx={{ width: 150 }}>Tipo</TableCell>
-            <TableCell sx={{ width: 100 }}>Estado</TableCell>
+            <TableCell sx={{ width: 150 }} sortDirection={orderBy === "tipo" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "tipo"}
+                direction={orderBy === "tipo" ? order : "asc"}
+                onClick={() => handleSort("tipo")}
+              >
+                Tipo
+              </TableSortLabel>
+            </TableCell>
+            <TableCell sx={{ width: 100 }} sortDirection={orderBy === "estado" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "estado"}
+                direction={orderBy === "estado" ? order : "asc"}
+                onClick={() => handleSort("estado")}
+              >
+                Estado
+              </TableSortLabel>
+            </TableCell>
 
             <TableCell sx={{ width: 160 }} sortDirection={orderBy === "fechaInicio" ? order : false}>
               <TableSortLabel

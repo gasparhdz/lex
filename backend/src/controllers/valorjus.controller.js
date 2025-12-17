@@ -11,8 +11,21 @@ function toDateOrNull(v) {
   if (v === null) return null;
   if (!v && v !== 0) return undefined;
   try {
-    const d = new Date(v);
-    return isNaN(d.getTime()) ? undefined : d;
+    let d = new Date(v);
+    if (isNaN(d.getTime())) return undefined;
+    
+    // Normalizar fecha a medianoche en zona horaria local para evitar problemas de unicidad
+    // Si es una fecha en formato YYYY-MM-DD, crear una fecha local a medianoche
+    if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v.trim())) {
+      // Formato YYYY-MM-DD: crear fecha local a medianoche
+      const [year, month, day] = v.trim().split('-').map(Number);
+      d = new Date(year, month - 1, day, 0, 0, 0, 0); // mes - 1 porque JS cuenta meses desde 0
+    } else {
+      // Para otros formatos, normalizar a medianoche local
+      d = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+    }
+    
+    return d;
   } catch {
     return undefined;
   }

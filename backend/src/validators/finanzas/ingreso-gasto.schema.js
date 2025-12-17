@@ -29,16 +29,26 @@ export const crearAplicacionSchema = z
  */
 export const listarAplicacionesQuerySchema = z
   .object({
+    // camelCase (ideal)
     ingresoId: id.optional(),
     gastoId: id.optional(),
+
+    // snake_case (por si el front/serializer lo manda así)
+    ingreso_id: id.optional(),
+    gasto_id: id.optional(),
+
     page: z.coerce.number().int().min(1).optional(),
-    pageSize: z.coerce.number().int().min(1).max(100).optional(),
+    pageSize: z.coerce.number().int().min(1).max(500).optional(),
   })
+  .transform((v) => ({
+    ...v,
+    ingresoId: v.ingresoId ?? v.ingreso_id,
+    gastoId: v.gastoId ?? v.gasto_id,
+  }))
   .refine((v) => v.ingresoId || v.gastoId, {
     message: "Debe indicar ingresoId o gastoId",
     path: ["ingresoId"],
-  })
-  .strip();
+  });
 
 /**
  * Actualizar aplicación

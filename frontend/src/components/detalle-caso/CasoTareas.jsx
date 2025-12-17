@@ -349,26 +349,28 @@ export default function CasoTareas({
         {onlyOverdue ? "No hay tareas vencidas." : "Aún no hay tareas registradas para este caso."}
       </Alert>
     ) : (
-      <List
-        disablePadding
-        sx={{
-          "& .MuiListItemButton-root": {
-            py: 0.6,
-            px: 1,
-            borderBottom: (t) => `1px solid ${t.palette.divider}`,
-            "&:last-of-type": { borderBottom: "none" },
-            "&:hover": { backgroundColor: (t) => t.palette.action.hover },
-          },
-        }}
-      >
-        {visibles.map((t) =>
-          isMobile ? (
-            <RowMobile key={t.id} t={t} onEdit={onEdit} onDetail={onDetail} />
-          ) : (
-            <RowDesktop key={t.id} t={t} onEdit={onEdit} onDetail={onDetail} />
-          )
-        )}
-      </List>
+      <Box sx={{ maxHeight: 400, overflowY: 'auto', overflowX: 'hidden' }}>
+        <List
+          disablePadding
+          sx={{
+            "& .MuiListItemButton-root": {
+              py: 0.6,
+              px: 1,
+              borderBottom: (t) => `1px solid ${t.palette.divider}`,
+              "&:last-of-type": { borderBottom: "none" },
+              "&:hover": { backgroundColor: (t) => t.palette.action.hover },
+            },
+          }}
+        >
+          {visibles.map((t) =>
+            isMobile ? (
+              <RowMobile key={t.id} t={t} onEdit={onEdit} onDetail={onDetail} />
+            ) : (
+              <RowDesktop key={t.id} t={t} onEdit={onEdit} onDetail={onDetail} />
+            )
+          )}
+        </List>
+      </Box>
     );
 
   if (embedded) return Content;

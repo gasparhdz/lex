@@ -436,17 +436,16 @@ useEffect(() => {
         </Row>
 
         {/* ===== Fila 2: Nro expediente – Carátula – Estado del caso ===== */}
-        <Row cols="1.2fr 2.4fr 1.4fr">
+        <Row cols="1.2fr 2.4fr ">
           <Controller
             name="nroExpte"
             control={control}
-            rules={{ required: "Ingresá el nro. de expediente" }}
             render={({ field }) => (
               <TF
                 label="Nro. expediente"
                 {...field}
                 error={!!errors.nroExpte}
-                helperText={errors.nroExpte?.message}
+                //helperText={errors.nroExpte?.message || "Opcional (ej: para ciudadanías)"}
               />
             )}
           />
@@ -454,17 +453,21 @@ useEffect(() => {
           <Controller
             name="caratula"
             control={control}
-            rules={{ required: "Ingresá la carátula" }}
             render={({ field }) => (
               <TF
                 label="Carátula"
                 {...field}
                 error={!!errors.caratula}
-                helperText={errors.caratula?.message}
+               // helperText={errors.caratula?.message || "Opcional"}
               />
             )}
           />
 
+        </Row>
+
+        {/* ===== Fila 3: Localidad radicación – Radicación – Estado radicación ===== */}
+        <Row cols="2fr 2fr 2fr 2fr">
+          
           <Controller
             name="estadoId"
             control={control}
@@ -479,10 +482,6 @@ useEffect(() => {
               </TF>
             )}
           />
-        </Row>
-
-        {/* ===== Fila 3: Localidad radicación – Radicación – Estado radicación ===== */}
-        <Row cols="2fr 2fr 2fr">
           {/* Localidad radicación (catId 9) */}
           <Controller
             name="localidadRadicacionId"

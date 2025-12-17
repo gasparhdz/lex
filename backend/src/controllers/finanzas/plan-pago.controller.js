@@ -57,10 +57,13 @@ const upper = (s) => (s ? String(s).trim().toUpperCase() : "");
 async function findValorJusSnapshot(fecha) {
   const d = fecha instanceof Date ? fecha : new Date(fecha);
   let row = await prisma.valorJUS.findFirst({
-    where: { fecha: { lte: d } },
+    where: { deletedAt: null, activo: true, fecha: { lte: d } },
     orderBy: { fecha: "desc" },
   });
-  if (!row) row = await prisma.valorJUS.findFirst({ orderBy: { fecha: "desc" } });
+  if (!row) row = await prisma.valorJUS.findFirst({
+    where: { deletedAt: null, activo: true },
+    orderBy: { fecha: "desc" },
+  });
   return row?.valor ?? null;
 }
 
@@ -99,6 +102,7 @@ function normalizePlanDTO(b = {}) {
     descripcion: strOrNull(b.descripcion),
     fechaInicio: toDateOrNull(b.fechaInicio),
     periodicidadId: intOrNull(b.periodicidadId),
+    politicaJusId: intOrNull(b.politicaJusId),
     montoCuotaJus: numOrNull(b.montoCuotaJus),
     montoCuotaPesos: numOrNull(b.montoCuotaPesos),
     valorJusRef: numOrNull(b.valorJusRef),
@@ -325,16 +329,29 @@ export async function crearPlan(req, res, next) {
     // Defaults: clienteId/casoId desde honorario si no vinieron
     const h = await prisma.honorario.findFirst({
       where: { id: dto.honorarioId, deletedAt: null },
-      select: { id: true, clienteId: true, casoId: true },
+      select: { id: true, clienteId: true, casoId: true, valorJusRef: true },
     });
     if (!h) return next({ status: 404, publicMessage: "Honorario asociado no existe" });
     if (!dto.clienteId && h.clienteId) dto.clienteId = h.clienteId;
     if (!dto.casoId && h.casoId) dto.casoId = h.casoId;
 
-    // valorJusRef: si la cuota base está en JUS y no vino snapshot, tomarlo (fechaInicio o hoy)
+    // valorJusRef: si la cuota base está en JUS y no vino snapshot, tomarlo según política del plan
     const hasJus = dto.montoCuotaJus != null && Number(dto.montoCuotaJus) > 0;
     if (hasJus && (dto.valorJusRef == null)) {
-      const vj = await findValorJusSnapshot(dto.fechaInicio || new Date());
+      const poli = Number(dto.politicaJusId || 168); // default: FECHA_REGULACION
+      let vj = null;
+      if (poli === 169) {
+        // AL_COBRO (169): usar el valor actual
+        const row = await prisma.valorJUS.findFirst({
+          where: { deletedAt: null, activo: true },
+          orderBy: { fecha: "desc" },
+          select: { valor: true },
+        });
+        vj = row?.valor ?? null;
+      } else {
+        // FECHA_REGULACION (168): usar la fecha de inicio del plan
+        vj = await findValorJusSnapshot(dto.fechaInicio || new Date());
+      }
       if (vj) dto.valorJusRef = vj;
     }
 
@@ -446,28 +463,39 @@ export async function crearCuota(req, res, next) {
     const planId = Number(req.params.id);
     if (!Number.isInteger(planId)) return next({ status: 400, publicMessage: "ID inválido" });
 
-    const plan = await prisma.planPago.findFirst({ where: { id: planId, deletedAt: null } });
-    if (!plan) return next({ status: 404, publicMessage: "Plan no encontrado" });
+          const plan = await prisma.planPago.findFirst({ 
+        where: { id: planId, deletedAt: null },
+        select: { id: true, valorJusRef: true, politicaJusId: true }
+      });
+      if (!plan) return next({ status: 404, publicMessage: "Plan no encontrado" });
 
-    const parse = crearCuotaSchema.safeParse({ ...req.body, planId });
-    if (!parse.success) {
-      return next({ status: 400, publicMessage: parse.error.errors.map((e) => e.message).join(", ") });
-    }
+      const parse = crearCuotaSchema.safeParse({ ...req.body, planId });
+      if (!parse.success) {
+        return next({ status: 400, publicMessage: parse.error.errors.map((e) => e.message).join(", ") });
+      }
 
-    const dto = normalizeCuotaDTO(parse.data);
+      const dto = normalizeCuotaDTO(parse.data);
 
-    // número incremental si no vino
-    if (dto.numero == null) {
-      const max = await prisma.planCuota.aggregate({ _max: { numero: true }, where: { planId, deletedAt: null, activo: true } });
-      dto.numero = (max._max.numero ?? 0) + 1;
-    }
+      // número incremental si no vino
+      if (dto.numero == null) {
+        const max = await prisma.planCuota.aggregate({ _max: { numero: true }, where: { planId, deletedAt: null, activo: true } });
+        dto.numero = (max._max.numero ?? 0) + 1;
+      }
 
-    // valorJusRef si monto en JUS y no vino
-    const hasJus = dto.montoJus != null && Number(dto.montoJus) > 0;
-    if (hasJus && (dto.valorJusRef == null)) {
-      const vj = plan.valorJusRef || (await findValorJusSnapshot(dto.vencimiento || new Date()));
-      if (vj) dto.valorJusRef = vj;
-    }
+      // valorJusRef si monto en JUS y no vino
+      // Si la política es AL_COBRO (169), valorJusRef debe ser null hasta que se cobre
+      const hasJus = dto.montoJus != null && Number(dto.montoJus) > 0;
+      const poli = Number(plan.politicaJusId || 168); // default: FECHA_REGULACION
+      if (hasJus && (dto.valorJusRef == null)) {
+        if (poli === 169) {
+          // AL_COBRO (169): no asignar valorJusRef (se asignará al aplicar un ingreso)
+          dto.valorJusRef = null;
+        } else {
+          // FECHA_REGULACION (168): usar el valor del plan o calcular según vencimiento
+          const vj = plan.valorJusRef || (await findValorJusSnapshot(dto.vencimiento || new Date()));
+          if (vj) dto.valorJusRef = vj;
+        }
+      }
 
     const created = await prisma.planCuota.create({
       data: { ...dto, planId, createdBy: req.user?.id ?? null },
@@ -498,15 +526,26 @@ export async function actualizarCuota(req, res, next) {
     }
     const dto = normalizeCuotaDTO(parse.data);
 
-    if (dto.numero != null) dto.numero = Math.max(1, Math.trunc(dto.numero));
+          if (dto.numero != null) dto.numero = Math.max(1, Math.trunc(dto.numero));
 
-    // valorJusRef si ahora pasan montoJus y no vino snapshot
-    const setsJus = Object.prototype.hasOwnProperty.call(dto, "montoJus") && dto.montoJus != null && Number(dto.montoJus) > 0;
-    if (setsJus && (dto.valorJusRef == null)) {
-      const plan = await prisma.planPago.findUnique({ where: { id: planId }, select: { valorJusRef: true } });
-      const vj = plan?.valorJusRef || (await findValorJusSnapshot(dto.vencimiento || new Date()));
-      if (vj) dto.valorJusRef = vj;
-    }
+      // valorJusRef si ahora pasan montoJus y no vino snapshot
+      // Si la política es AL_COBRO (169), valorJusRef debe ser null hasta que se cobre
+      const setsJus = Object.prototype.hasOwnProperty.call(dto, "montoJus") && dto.montoJus != null && Number(dto.montoJus) > 0;
+      if (setsJus && (dto.valorJusRef == null)) {
+        const plan = await prisma.planPago.findUnique({ 
+          where: { id: planId }, 
+          select: { valorJusRef: true, politicaJusId: true } 
+        });
+        const poli = Number(plan?.politicaJusId || 168); // default: FECHA_REGULACION
+        if (poli === 169) {
+          // AL_COBRO (169): no asignar valorJusRef (se asignará al aplicar un ingreso)
+          dto.valorJusRef = null;
+        } else {
+          // FECHA_REGULACION (168): usar el valor del plan o calcular según vencimiento
+          const vj = plan?.valorJusRef || (await findValorJusSnapshot(dto.vencimiento || new Date()));
+          if (vj) dto.valorJusRef = vj;
+        }
+      }
 
     const upd = await prisma.planCuota.update({
       where: { id: cuotaId },
@@ -549,7 +588,10 @@ export async function generarCuotas(req, res, next) {
 
     const plan = await prisma.planPago.findFirst({
       where: { id: planId, deletedAt: null },
-      include: { periodicidad: true },
+      include: { 
+        periodicidad: true,
+        politicaJus: true,
+      },
     });
     if (!plan) return next({ status: 404, publicMessage: "Plan no encontrado" });
 
@@ -578,10 +620,8 @@ export async function generarCuotas(req, res, next) {
       return next({ status: 400, publicMessage: "No hay montos válidos (ni en el plan ni en la solicitud)." });
     }
 
-    const valorJusRef =
-      body.valorJusRef != null
-        ? Number(body.valorJusRef)
-        : (plan.valorJusRef || (montoJus > 0 ? await findValorJusSnapshot(current) : null));
+    // Política JUS del plan
+    const poli = Number(plan.politicaJusId || 168); // default: FECHA_REGULACION
 
     // numeración incremental
     const max = await prisma.planCuota.aggregate({
@@ -592,13 +632,31 @@ export async function generarCuotas(req, res, next) {
 
     const toCreate = [];
     for (let i = 0; i < Number(body.cantidad); i++) {
+              // valorJusRef: según política
+        let vj = null;
+        if (montoJus > 0) {
+          if (body.valorJusRef != null) {
+            // Si viene explícito en body, usarlo
+            vj = Number(body.valorJusRef);
+          } else {
+            // Si no, calcular según política
+            if (poli === 169) {
+              // AL_COBRO (169): valorJusRef debe ser null hasta que se cobre (se asigna al aplicar un ingreso)
+              vj = null;
+            } else {
+              // FECHA_REGULACION (168): usar el valor del plan (constante, fecha de regulación)
+              vj = plan.valorJusRef;
+            }
+          }
+        }
+
       toCreate.push({
         planId,
         numero: nextNum++,
         vencimiento: current,
         montoJus: montoJus > 0 ? montoJus : null,
         montoPesos: montoPes > 0 ? montoPes : null,
-        valorJusRef: montoJus > 0 ? (valorJusRef ?? (await findValorJusSnapshot(current))) : null,
+        valorJusRef: vj,
         createdBy: req.user?.id ?? null,
       });
       current = addNext(current);

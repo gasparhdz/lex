@@ -147,7 +147,7 @@ const CAT_PARTE        = 11;
 const CAT_MONEDA       = 14;
 const CAT_ESTADO       = 16;
 const CAT_PERIODICIDAD = 18;
-const CAT_POLITICA_JUS = 22; // <- nueva categoría
+const CAT_POLITICA_JUS = 20;
 
 const ID_POLI_FECHA_REG = 168;
 const ID_POLI_ACTUAL    = 169;
@@ -281,7 +281,31 @@ export default function HonorarioForm() {
   // Verificaciones de permisos
   const canEditarFinanzas = usePermiso('FINANZAS', 'editar');
 
-  const backTo = useMemo(() => location.state?.from || "/finanzas?tab=honorarios", [location.state]);
+  // Helper para normalizar backTo y preservar la pestaña activa
+  const normalizeBackTo = useMemo(() => {
+    const from = location.state?.from;
+    
+    // Si viene de un detalle (objeto con pathname), usarlo tal cual
+    if (from && typeof from === 'object' && from.pathname) {
+      return from;
+    }
+    
+    // Si viene de una ruta de finanzas, convertir a formato con tab
+    const fromStr = typeof from === 'string' ? from : '';
+    if (fromStr.includes('/finanzas/honorarios') || (fromStr.includes('/finanzas') && !fromStr.includes('?'))) {
+      return "/finanzas?tab=honorarios";
+    }
+    
+    // Si from es una string válida (ruta de detalle), usarla
+    if (fromStr && (fromStr.startsWith('/clientes/') || fromStr.startsWith('/casos/'))) {
+      return fromStr;
+    }
+    
+    // Default: volver a la pestaña de honorarios en Finanzas
+    return "/finanzas?tab=honorarios";
+  }, [location.state]);
+  
+  const backTo = normalizeBackTo;
 
   const {
     control,
@@ -303,12 +327,13 @@ export default function HonorarioForm() {
       montoPesos: "",
       politicaJusId: "",
       plan: {
-        crear: false,
-        cantCuotas: "",
+        crear: true, // Obligatorio crear plan al crear honorario
+        cantCuotas: "1",
         fechaPrimera: "",
         periodicidadId: "",
         diasPersonalizados: "",
         montoPorCuota: "",
+        politicaJusId: "",
       },
     },
   });
@@ -397,12 +422,12 @@ export default function HonorarioForm() {
       const mensual = periodicidades.find(p => isLike(p, "MENSUAL"));
       if (mensual) setValue("plan.periodicidadId", String(mensual.id), { shouldDirty: false });
     }
-    // Default de política: FECHA_REGULACION (id 168)
-    if (!watchField("politicaJusId") && politicasJus.length) {
+    // Default de política JUS en el plan: FECHA_REGULACION (id 168)
+    if (!watchField("plan.politicaJusId") && politicasJus.length) {
       const poli =
         politicasJus.find(p => String(p.id) === String(ID_POLI_FECHA_REG)) ||
         politicasJus.find(p => isLike(p, "REGULACION"));
-      if (poli) setValue("politicaJusId", String(poli.id), { shouldDirty: false });
+      if (poli) setValue("plan.politicaJusId", String(poli.id), { shouldDirty: false });
     }
 
     if (partes.length || monedas.length || estados.length || periodicidades.length || politicasJus.length) {
@@ -415,7 +440,7 @@ export default function HonorarioForm() {
   const monedaIdWatch  = watch("monedaId");
   const jusWatch       = watch("jus");
   const montoPesosWatch = watch("montoPesos");
-  const politicaJusWatch = watch("politicaJusId");
+  const politicaJusWatch = watch("plan.politicaJusId");
   const fechaRegulacionWatch = watch("fechaRegulacion");
 
   const monedaSel = useMemo(
@@ -424,7 +449,20 @@ export default function HonorarioForm() {
   );
   const isJUS = useMemo(() => !!monedaSel && isLike(monedaSel, "JUS"), [monedaSel]);
 
-  /* ======= Valor JUS según política ======= */
+  /* ======= Valor JUS de la fecha de regulación (siempre para el honorario) ======= */
+  const { data: valorJusPorFechaReg } = useQuery({
+    queryKey: ["valor-jus-por-fecha-regulacion", fechaRegulacionWatch],
+    queryFn: async () => {
+      const fechaISO = fechaRegulacionWatch
+        ? toIsoDateOnlyLocal(fechaRegulacionWatch)
+        : new Date().toISOString().slice(0, 10);
+      return await getValorJusPorFecha(fechaISO);
+    },
+    enabled: Boolean(fechaRegulacionWatch && isJUS),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  /* ======= Valor JUS según política (solo para el plan) ======= */
   const { data: valorJusSel } = useQuery({
     queryKey: ["valor-jus-segun-politica", politicaJusWatch, fechaRegulacionWatch],
     queryFn: async () => {
@@ -436,19 +474,25 @@ export default function HonorarioForm() {
         : new Date().toISOString().slice(0, 10);
       return await getValorJusPorFecha(fechaISO);
     },
-    enabled: Boolean(politicaJusWatch),
+    enabled: Boolean(politicaJusWatch && isJUS),
     staleTime: 5 * 60 * 1000,
   });
 
+  // Valor JUS para el honorario: siempre de la fecha de regulación
   const valorJusNumber = useMemo(() => {
-    const vSel = valorJusSel?.valor ?? valorJusSel;
-    if (vSel != null && Number.isFinite(Number(vSel))) return Number(vSel);
+    // Si es edición, usar el valor guardado del honorario
     if (honorario?.valorJusRef != null && Number.isFinite(Number(honorario.valorJusRef))) {
       return Number(honorario.valorJusRef);
     }
+    // Si es creación/edición, usar el valor de la fecha de regulación
+    const vReg = valorJusPorFechaReg?.valor ?? valorJusPorFechaReg;
+    if (vReg != null && Number.isFinite(Number(vReg))) {
+      return Number(vReg);
+    }
+    // Fallback al valor actual
     if (valorJusNum != null && Number.isFinite(Number(valorJusNum))) return Number(valorJusNum);
     return null;
-  }, [valorJusSel, honorario, valorJusNum]);
+  }, [valorJusPorFechaReg, honorario, valorJusNum]);
 
   const importeCalculado = useMemo(() => {
     const cant = parseInt(String(jusWatch || "0"), 10);
@@ -471,7 +515,7 @@ export default function HonorarioForm() {
       jus: honorario.jus != null ? String(honorario.jus) : "",
       montoPesos: honorario.montoPesos != null ? String(honorario.montoPesos) : "",
       politicaJusId: honorario.politicaJusId ? String(honorario.politicaJusId) : "",
-      plan: { crear: false, periodicidadId: "", diasPersonalizados: "", cantCuotas: "", fechaPrimera: "", montoPorCuota: "" },
+      plan: { crear: false, periodicidadId: "", diasPersonalizados: "", cantCuotas: "", fechaPrimera: "", montoPorCuota: "", politicaJusId: "" },
     });
   }, [honorario, reset]);
 
@@ -561,14 +605,62 @@ export default function HonorarioForm() {
         payload.valorJusRef = jusRef;
         payload.montoPesos = Number((payload.jus * jusRef).toFixed(2));
       }
-    } else {
-      payload.montoPesos = Number(payload.montoPesos);
-      delete payload.jus;
-      delete payload.politicaJusId; // no aplica si no es JUS
-    }
+         } else {
+       payload.montoPesos = Number(payload.montoPesos);
+       delete payload.jus;
+     }
 
-    // Plan opcional
-    if (values?.plan?.crear) {
+    // Plan: obligatorio en creación, opcional en edición
+    if (isCreate) {
+      // En creación, siempre crear el plan (obligatorio)
+      const p = values.plan || {};
+      const periodicidadIdNum = p.periodicidadId ? Number(p.periodicidadId) : null;
+      
+      // Si no se especificó periodicidad, usar MENSUAL por defecto
+      let periodicidadFinal = periodicidadIdNum;
+      if (!periodicidadFinal) {
+        const mensual = (periodicidades || []).find(pp => isLike(pp, "MENSUAL"));
+        periodicidadFinal = mensual ? mensual.id : null;
+        if (!periodicidadFinal) {
+          enqueueSnackbar("Elegí la periodicidad", { variant: "warning" });
+          return;
+        }
+      }
+      
+      const paramSel = (periodicidades || []).find(pp => String(pp.id) === String(periodicidadFinal));
+      const esPers = paramSel ? isLike(paramSel, "PERSONALIZADA") : false;
+
+      // Calcular monto por cuota si no se especificó
+      const cantCuotas = Number(p.cantCuotas || 1);
+      let montoPorCuota = p.montoPorCuota ? Number(p.montoPorCuota) : null;
+      if (!montoPorCuota || montoPorCuota <= 0) {
+        // Calcular automáticamente según el total del honorario
+        if (isJUS) {
+          montoPorCuota = Number(jusWatch) / cantCuotas;
+        } else {
+          montoPorCuota = Number(montoPesosWatch) / cantCuotas;
+        }
+      }
+
+             // Validar política JUS si es obligatoria
+       if (isJUS && !p.politicaJusId) {
+         enqueueSnackbar("Elegí la política de JUS para el plan", { variant: "warning" });
+         return;
+       }
+
+       payload.plan = {
+         crear: true,
+         cantidad: cantCuotas,
+         fechaPrimera: p.fechaPrimera || toIsoDateOnlyLocal(new Date()),
+         periodicidadId: periodicidadFinal,
+         ...(esPers ? { periodicidadDias: Number(p.diasPersonalizados || 30) } : {}),
+         ...(isJUS
+           ? { montoCuotaJus: montoPorCuota }
+           : { montoCuotaPesos: montoPorCuota }),
+         ...(isJUS && p.politicaJusId ? { politicaJusId: Number(p.politicaJusId) } : {}),
+       };
+    } else if (values?.plan?.crear) {
+      // En edición, solo crear plan si se marca el switch
       const p = values.plan;
       const periodicidadIdNum = p.periodicidadId ? Number(p.periodicidadId) : null;
       if (!periodicidadIdNum) {
@@ -577,6 +669,12 @@ export default function HonorarioForm() {
       }
       const paramSel = (periodicidades || []).find(pp => String(pp.id) === String(periodicidadIdNum));
       const esPers = paramSel ? isLike(paramSel, "PERSONALIZADA") : false;
+
+      // Validar política JUS si es obligatoria
+      if (isJUS && !p.politicaJusId) {
+        enqueueSnackbar("Elegí la política de JUS para el plan", { variant: "warning" });
+        return;
+      }
 
       payload.plan = {
         crear: true,
@@ -587,6 +685,7 @@ export default function HonorarioForm() {
         ...(isJUS
           ? { montoCuotaJus: p.montoPorCuota ? Number(p.montoPorCuota) : null }
           : { montoCuotaPesos: p.montoPorCuota ? Number(p.montoPorCuota) : null }),
+        ...(isJUS && p.politicaJusId ? { politicaJusId: Number(p.politicaJusId) } : {}),
       };
     } else {
       delete payload.plan;
@@ -751,8 +850,8 @@ export default function HonorarioForm() {
             />
           </Row>
 
-          {/* === Moneda + Política + Montos + Valor JUS === */}
-          <Row cols="1fr 1fr 1fr 1fr 1fr">
+          {/* === Moneda + Montos + Valor JUS === */}
+          <Row cols="1fr 1fr 1fr 1fr">
             <Controller
               name="monedaId"
               control={control}
@@ -782,68 +881,97 @@ export default function HonorarioForm() {
               )}
             />
 
-            <Controller
-              name="politicaJusId"
-              control={control}
-              render={({ field }) => (
-                <TextField
-                  select size="small" fullWidth
-                  label="Política de JUS"
-                  {...field}
-                  disabled={ro || !isJUS}
-                >
-                  {politicasJus.map(p => (
-                    <MenuItem key={p.id} value={String(p.id)}>
-                      {p.nombre || p.codigo}
-                    </MenuItem>
-                  ))}
-                </TextField>
-              )}
-            />
+            {!isJUS ? (
+              // Cuando NO es JUS: Importe primero
+              <Controller
+                name="montoPesos"
+                control={control}
+                render={({ field }) => (
+                  <TextField
+                    fullWidth size="small" label="Importe"
+                    type="number"
+                    inputProps={{ step: "0.01", readOnly: ro }}
+                    value={field.value}
+                    onChange={(e) => { if (ro) return; field.onChange(e.target.value); }}
+                    disabled={ro}
+                    onBlur={() => {
+                      if (ro) return;
+                      if (field.value === "" || field.value == null) return;
+                      const n = Number(field.value);
+                      if (Number.isFinite(n)) field.onChange(n.toFixed(2));
+                    }}
+                  />
+                )}
+              />
+            ) : (
+              // Cuando es JUS: Cantidad de JUS primero
+              <Controller
+                name="jus"
+                control={control}
+                render={({ field }) => (
+                  <TextField
+                    fullWidth size="small" label="Cantidad de JUS"
+                    type="text" inputProps={{ inputMode: "numeric", pattern: "\\d*", readOnly: ro }}
+                    value={field.value ?? ""}
+                    onChange={(e) => { if (ro) return; const v = e.target.value; if (/^\d*$/.test(v)) field.onChange(v); }}
+                    disabled={ro}
+                  />
+                )}
+              />
+            )}
 
-            <Controller
-              name="jus"
-              control={control}
-              render={({ field }) => (
-                <TextField
-                  fullWidth size="small" label="Cantidad de JUS"
-                  type="text" inputProps={{ inputMode: "numeric", pattern: "\\d*", readOnly: ro || !isJUS }}
-                  value={field.value ?? ""}
-                  onChange={(e) => { if (ro) return; const v = e.target.value; if (/^\d*$/.test(v)) field.onChange(v); }}
-                  disabled={ro || !isJUS}
-                />
-              )}
-            />
+            {!isJUS ? (
+              // Cuando NO es JUS: Cantidad de JUS (deshabilitado)
+              <Controller
+                name="jus"
+                control={control}
+                render={({ field }) => (
+                  <TextField
+                    fullWidth size="small" label="Cantidad de JUS"
+                    type="text" inputProps={{ inputMode: "numeric", pattern: "\\d*", readOnly: true }}
+                    value=""
+                    disabled
+                  />
+                )}
+              />
+            ) : (
+              // Cuando es JUS: Valor JUS
+              <TextField
+                size="small"
+                label="Valor JUS"
+                value={valorJusNumber != null ? formatCurrency(valorJusNumber, "ARS") : ""}
+                InputProps={{ readOnly: true }}
+                disabled
+                fullWidth
+              />
+            )}
 
-            <TextField
-              size="small"
-              label="Valor JUS"
-              value={valorJusNumber != null ? formatCurrency(valorJusNumber, "ARS") : ""}
-              InputProps={{ readOnly: true }}
-              disabled
-              fullWidth
-            />
-
-            <Controller
-              name="montoPesos"
-              control={control}
-              render={({ field }) => (
-                <TextField
-                  fullWidth size="small" label="Importe"
-                  type={isJUS ? "text" : "number"}
-                  inputProps={isJUS ? { readOnly: true } : { step: "0.01", readOnly: ro }}
-                  value={isJUS ? (importeCalculado ? formatCurrency(Number(importeCalculado), "ARS") : "") : field.value}
-                  onChange={(e) => { if (ro) return; field.onChange(e.target.value); }}
-                  disabled={ro || isJUS}
-                  onBlur={() => {
-                    if (isJUS || ro) return;
-                    if (field.value === "" || field.value == null) return;
-                    const n = Number(field.value);
-                    if (Number.isFinite(n)) field.onChange(n.toFixed(2));
-                  }}
-                />
-              )}
-            />
+            {!isJUS ? (
+              // Cuando NO es JUS: Valor JUS (deshabilitado)
+              <TextField
+                size="small"
+                label="Valor JUS"
+                value=""
+                InputProps={{ readOnly: true }}
+                disabled
+                fullWidth
+              />
+            ) : (
+              // Cuando es JUS: Importe (calculado)
+              <Controller
+                name="montoPesos"
+                control={control}
+                render={({ field }) => (
+                  <TextField
+                    fullWidth size="small" label="Importe"
+                    type="text"
+                    inputProps={{ readOnly: true }}
+                    value={importeCalculado ? formatCurrency(Number(importeCalculado), "ARS") : ""}
+                    disabled
+                  />
+                )}
+              />
+            )}
           </Row>
 
           {/* === Grilla de cuotas (si el back las trae) === */}
@@ -950,23 +1078,31 @@ export default function HonorarioForm() {
 
               <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1 }}>
                 <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                  {isEdit && planConPagos?.tieneCuotasPagas ? "Crear plan nuevo" : "Plan de pago (opcional)"}
+                  {isCreate 
+                    ? "Convenio de pago" 
+                    : (isEdit && planConPagos?.tieneCuotasPagas ? "Crear plan nuevo" : "Plan de pago")}
                 </Typography>
-                <Controller
-                  name="plan.crear"
-                  control={control}
-                  render={({ field }) => (
-                    <FormControlLabel
-                      label={isEdit && planConPagos?.tieneCuotasPagas ? "Crear plan nuevo" : "Crear plan ahora"}
-                      control={<Switch checked={Boolean(field.value)} onChange={(e)=>field.onChange(e.target.checked)} />}
-                    />
-                  )}
-                />
+                {isCreate ? (
+                  <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                    
+                  </Typography>
+                ) : (
+                  <Controller
+                    name="plan.crear"
+                    control={control}
+                    render={({ field }) => (
+                      <FormControlLabel
+                        label={isEdit && planConPagos?.tieneCuotasPagas ? "Crear plan nuevo" : "Crear plan ahora"}
+                        control={<Switch checked={Boolean(field.value)} onChange={(e)=>field.onChange(e.target.checked)} />}
+                      />
+                    )}
+                  />
+                )}
               </Box>
 
-              {watch("plan.crear") && (
+              {(watch("plan.crear") || isCreate) && (
                 <>
-                  <Row cols={esPersonalizada ? "1fr 1fr 1fr 1fr 1fr" : "1fr 1fr 1fr 1fr"}>
+                  <Row cols={esPersonalizada ? (isJUS ? "1fr 1fr 1fr 1fr 1fr 1fr" : "1fr 1fr 1fr 1fr 1fr") : (isJUS ? "1fr 1fr 1fr 1fr 1fr" : "1fr 1fr 1fr 1fr")}>
                     <Controller name="plan.cantCuotas" control={control}
                       render={({ field }) => (
                         <TextField 
@@ -1016,6 +1152,28 @@ export default function HonorarioForm() {
                       <Controller name="plan.diasPersonalizados" control={control}
                         render={({ field }) => (<TextField label="Cada (días)" type="number" size="small" fullWidth {...field} />)} />
                     )}
+                    {isJUS && (
+                      <Controller
+                        name="plan.politicaJusId"
+                        control={control}
+                        render={({ field }) => (
+                          <TextField
+                            select size="small" fullWidth
+                            label="Valor JUS"
+                            {...field}
+                            disabled={ro}
+                            error={isCreate && !field.value && isJUS}
+                            helperText={isCreate && !field.value && isJUS ? "Requerido para planes en JUS" : ""}
+                          >
+                            {(politicasJus || []).map(p => (
+                              <MenuItem key={p.id} value={String(p.id)}>
+                                {p.nombre || p.codigo}
+                              </MenuItem>
+                            ))}
+                          </TextField>
+                        )}
+                      />
+                    )}
                     <Controller name="plan.montoPorCuota" control={control}
                       render={({ field }) => {
                         // Calcular monto por cuota automáticamente
@@ -1045,7 +1203,7 @@ export default function HonorarioForm() {
                         
                         return (
                           <TextField
-                            label={isJUS ? "Monto por cuota (JUS)" : "Monto por cuota (ARS)"}
+                            label="Monto por cuota"
                             size="small" 
                             fullWidth
                             value={montoCalculado}

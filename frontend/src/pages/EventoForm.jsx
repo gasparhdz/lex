@@ -141,6 +141,9 @@ export default function EventoForm() {
     },
   });
 
+  // Watch para validaciones cruzadas de fechas
+  const fechaInicioWatch = watch("fechaInicio");
+
   // Volver a donde estabas (Agenda o Eventos), con fallback seguro
   const fromQuery   = new URLSearchParams(location.search).get("from"); // ej: ?from=agenda
   const fromState   = location.state?.from;                              // ej: { state:{ from:'/agenda' } }
@@ -286,7 +289,6 @@ export default function EventoForm() {
     const payload = limpiarPayload({ ...values });
 
     // Forzar flags según requerimiento
-    payload.allDay = false;
     payload.notificadoACliente = false;
     payload.activo = true;
 
@@ -469,13 +471,28 @@ export default function EventoForm() {
             <Controller
               name="fechaFin"
               control={control}
+              rules={{
+                validate: (fechaFin) => {
+                  if (fechaFin && fechaInicioWatch && fechaFin < fechaInicioWatch) {
+                    return "La fecha fin no puede ser anterior a la fecha inicio";
+                  }
+                  return true;
+                }
+              }}
               render={({ field }) => (
                 <DateTimePicker
                   label="Fecha fin"
                   value={field.value}
                   onChange={(v) => field.onChange(v)}
                   disabled={isView}
-                  slotProps={{ textField: { fullWidth: true, size: "small" } }}
+                  slotProps={{
+                    textField: {
+                      fullWidth: true,
+                      size: "small",
+                      error: !!errors.fechaFin,
+                      helperText: errors.fechaFin?.message,
+                    }
+                  }}
                 />
               )}
             />
@@ -483,13 +500,28 @@ export default function EventoForm() {
             <Controller
               name="recordatorio"
               control={control}
+              rules={{
+                validate: (recordatorio) => {
+                  if (recordatorio && fechaInicioWatch && recordatorio > fechaInicioWatch) {
+                    return "El recordatorio no puede ser posterior a la fecha inicio";
+                  }
+                  return true;
+                }
+              }}
               render={({ field }) => (
                 <DateTimePicker
                   label="Recordatorio"
                   value={field.value}
                   onChange={(v) => field.onChange(v)}
                   disabled={isView}
-                  slotProps={{ textField: { fullWidth: true, size: "small" } }}
+                  slotProps={{
+                    textField: {
+                      fullWidth: true,
+                      size: "small",
+                      error: !!errors.recordatorio,
+                      helperText: errors.recordatorio?.message,
+                    }
+                  }}
                 />
               )}
             />

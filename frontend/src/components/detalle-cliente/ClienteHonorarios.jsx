@@ -388,6 +388,8 @@ export default function ClienteHonorarios({
       {/* ===== Tabla: desktop con scroll horizontal; mobile sin scroll lateral ===== */}
       <Box
         sx={{
+          maxHeight: 400,
+          overflowY: "auto",
           overflowX: { xs: "hidden", md: "auto" }, // mobile sin scroll lateral
           borderRadius: 2,
           "&::-webkit-scrollbar": { height: 8 },

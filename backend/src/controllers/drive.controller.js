@@ -94,12 +94,15 @@ export async function crearCarpetaCaso(req, res, next) {
   try {
     const { id } = req.params;
 
-    // Obtener caso con cliente
+    // Obtener caso con cliente y tipo
     const caso = await prisma.caso.findUnique({
       where: { id: parseInt(id) },
       include: {
         cliente: {
           select: { id: true, nombre: true, apellido: true, razonSocial: true, driveFolderId: true },
+        },
+        tipo: {
+          select: { id: true, nombre: true },
         },
       },
     });
@@ -140,11 +143,19 @@ export async function crearCarpetaCaso(req, res, next) {
     const numeroSiguiente = numeroMaximo + 1;
     const numeroFormateado = String(numeroSiguiente).padStart(2, '0');
 
-    // Nombre de la carpeta: "NN - Carátula"
-    const nombreCarpeta = `${numeroFormateado} - ${caso.caratula}`;
+    // Nombre de la carpeta: "NN - Carátula" o descripción o tipo
+    let nombreCarpeta;
+    if (caso.caratula && caso.caratula.trim()) {
+      nombreCarpeta = caso.caratula.trim();
+    } else if (caso.descripcion && caso.descripcion.trim()) {
+      nombreCarpeta = caso.descripcion.trim();
+    } else {
+      nombreCarpeta = caso.tipo?.nombre || 'Caso';
+    }
+    const nombreCarpetaCompleto = `${numeroFormateado} - ${nombreCarpeta}`;
 
     // Crear carpeta en Drive
-    const carpeta = await crearCarpeta(nombreCarpeta, caso.cliente.driveFolderId);
+    const carpeta = await crearCarpeta(nombreCarpetaCompleto, caso.cliente.driveFolderId);
 
     // Guardar ID y número en BD
     await prisma.caso.update({

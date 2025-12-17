@@ -131,6 +131,16 @@ function buildOrderBy({ orderBy, order, sort }) {
       case "fechaInicio":
       case "createdAt":
         return [{ [orderBy]: dir }];
+      case "descripcion":
+        return [{ descripcion: dir }];
+      case "cliente":
+        return [{ cliente: { apellido: dir } }];
+      case "caso":
+        return [{ caso: { nroExpte: dir } }];
+      case "tipo":
+        return [{ tipo: { nombre: dir } }];
+      case "estado":
+        return [{ estado: { nombre: dir } }];
       default:
         return [{ fechaInicio: "asc" }];
     }
@@ -138,7 +148,7 @@ function buildOrderBy({ orderBy, order, sort }) {
 
   // sort compuesto: field:dir,field2:dir
   if (sort) {
-    const allow = new Set(["fechaInicio", "createdAt"]);
+    const allow = new Set(["fechaInicio", "createdAt", "descripcion", "cliente", "caso", "tipo", "estado"]);
     const orderByArr = [];
     const parts = String(sort)
       .split(",")
@@ -148,7 +158,17 @@ function buildOrderBy({ orderBy, order, sort }) {
       const [field, dirRaw] = p.split(":");
       if (!field || !allow.has(field)) continue;
       const dir = (dirRaw || "asc").toLowerCase() === "desc" ? "desc" : "asc";
-      orderByArr.push({ [field]: dir });
+      if (field === "cliente") {
+        orderByArr.push({ cliente: { apellido: dir } });
+      } else if (field === "caso") {
+        orderByArr.push({ caso: { nroExpte: dir } });
+      } else if (field === "tipo") {
+        orderByArr.push({ tipo: { nombre: dir } });
+      } else if (field === "estado") {
+        orderByArr.push({ estado: { nombre: dir } });
+      } else {
+        orderByArr.push({ [field]: dir });
+      }
     }
     if (orderByArr.length) return orderByArr;
   }

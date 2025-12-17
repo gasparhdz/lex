@@ -335,6 +335,8 @@ export default function CasoGastos({ gastos = [], onEdit, onDetail }) {
 
       <Box
         sx={{
+          maxHeight: 400,
+          overflowY: "auto",
           overflowX: { xs: "hidden", md: "auto" },
           borderRadius: 2,
           "&::-webkit-scrollbar": { height: 8 },

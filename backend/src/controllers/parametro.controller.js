@@ -253,17 +253,17 @@ export async function crearParametro(req, res, next) {
     const { categoriaId, codigo, nombre, orden = 0, activo = true, parentId, extra } = req.body;
 
     // Validar que la categoría existe
-    const categoria = await prisma.categoria.findUnique({ where: { id: categoriaId } });
+    const categoria = await prisma.categoria.findUnique({ where: { id: Number(categoriaId) } });
     if (!categoria) return next({ status: 404, publicMessage: 'Categoría no encontrada' });
 
     const nuevo = await prisma.parametro.create({
       data: {
-        categoriaId,
+        categoriaId: Number(categoriaId),
         codigo: codigo.toUpperCase(),
         nombre,
         orden: parseInt(orden),
         activo,
-        parentId: parentId || null,
+        parentId: parentId ? Number(parentId) : null,
         extra: extra || null,
       },
       include: { categoria: true }

@@ -67,6 +67,31 @@ export default function ValorJUSForm() {
     enabled: esEdicion,
   });
 
+  // Verificar si ya existe un valor JUS para la fecha seleccionada (solo en modo creación)
+  const fechaISO = formData.fecha && dayjs.isDayjs(formData.fecha) && formData.fecha.isValid()
+    ? formData.fecha.format('YYYY-MM-DD')
+    : null;
+
+  const { data: valorExistente } = useQuery({
+    queryKey: ["valorjus-existe", fechaISO],
+    queryFn: async () => {
+      if (!fechaISO) return null;
+      // Buscar valores JUS para esa fecha exacta
+      const { data } = await api.get("/valorjus", {
+        params: {
+          from: fechaISO,
+          to: fechaISO,
+          page: 1,
+          pageSize: 1,
+        },
+      });
+      const rows = data?.data || [];
+      return rows.find((v) => v.fecha === fechaISO) || null;
+    },
+    enabled: !esEdicion && !!fechaISO,
+    staleTime: 10_000,
+  });
+
   // Cargar datos cuando lleguen del servidor
   useEffect(() => {
     if (valorJUSData && esEdicion) {
@@ -79,10 +104,33 @@ export default function ValorJUSForm() {
 
   const saveMut = useMutation({
     mutationFn: (data) => {
+      // Validar valor: debe ser un número válido y > 0
+      const valorStr = String(data.valor || "").trim();
+      if (!valorStr) {
+        throw new Error("El campo 'valor' es requerido");
+      }
+      const valorNum = Number(valorStr);
+      if (!Number.isFinite(valorNum) || valorNum <= 0) {
+        throw new Error("El campo 'valor' debe ser un número mayor a 0");
+      }
+
+      // Validar fecha: debe ser un objeto dayjs válido
+      if (!data.fecha || !dayjs.isDayjs(data.fecha) || !data.fecha.isValid()) {
+        throw new Error("El campo 'fecha' es requerido y debe ser válido");
+      }
+      const fechaISO = data.fecha.format('YYYY-MM-DD');
+      if (!fechaISO || fechaISO === 'Invalid Date') {
+        throw new Error("La fecha no es válida");
+      }
+
       const payload = {
-        valor: Number(data.valor),
-        fecha: data.fecha ? data.fecha.format('YYYY-MM-DD') : null,
+        valor: valorNum,
+        fecha: fechaISO,
       };
+      
+      // Debug: ver qué se está enviando
+      console.log("Payload enviado:", payload);
+      
       if (esEdicion) {
         return api.put(`/valorjus/${id}`, payload).then((r) => r.data);
       }
@@ -98,7 +146,13 @@ export default function ValorJUSForm() {
       nav(`/configuracion?tab=0&categoriaId=${categoriaId}`);
     },
     onError: (err) => {
-      const msg = err?.response?.data?.publicMessage || "Error al guardar";
+      // Si es un error de validación del frontend (throw new Error), usar el mensaje directo
+      if (err?.message && !err?.response) {
+        enqueueSnackbar(err.message, { variant: "error" });
+        return;
+      }
+      // Si es un error del backend, usar publicMessage
+      const msg = err?.response?.data?.publicMessage || err?.message || "Error al guardar";
       enqueueSnackbar(msg, { variant: "error" });
     },
   });
@@ -109,15 +163,41 @@ export default function ValorJUSForm() {
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (!formData.valor || !formData.fecha) {
-      enqueueSnackbar("Completá todos los campos", { variant: "warning" });
+    
+    // Validar que el valor no esté vacío
+    const valorStr = String(formData.valor || "").trim();
+    if (!valorStr) {
+      enqueueSnackbar("Completá el campo Valor JUS", { variant: "warning" });
       return;
     }
-    const valorNum = Number(formData.valor);
-    if (isNaN(valorNum) || valorNum <= 0) {
+    
+    // Validar que el valor sea un número válido y > 0
+    const valorNum = Number(valorStr);
+    if (!Number.isFinite(valorNum) || valorNum <= 0) {
       enqueueSnackbar("El valor debe ser un número mayor a 0", { variant: "warning" });
       return;
     }
+    
+    // Validar que la fecha esté presente y sea válida
+    if (!formData.fecha) {
+      enqueueSnackbar("Completá el campo Fecha", { variant: "warning" });
+      return;
+    }
+    
+    if (!dayjs.isDayjs(formData.fecha) || !formData.fecha.isValid()) {
+      enqueueSnackbar("La fecha no es válida", { variant: "warning" });
+      return;
+    }
+    
+    // En modo creación: verificar si ya existe un valor JUS para esa fecha
+    if (!esEdicion && valorExistente) {
+      enqueueSnackbar(
+        `Ya existe un Valor JUS para la fecha ${fechaISO}. Por favor, editá el valor existente (ID: ${valorExistente.id}) o elegí otra fecha.`,
+        { variant: "error", autoHideDuration: 8000 }
+      );
+      return;
+    }
+    
     saveMut.mutate(formData);
   };
 
@@ -155,18 +235,34 @@ export default function ValorJUSForm() {
           localeText={esES.components.MuiLocalizationProvider.defaultProps.localeText}
         >
           <Row cols="1fr 1fr">
-            <DatePicker
-              label="Vigente Desde"
-              value={formData.fecha}
-              onChange={(newValue) => handleChange("fecha", newValue)}
-              slotProps={{
-                textField: {
-                  size: 'small',
-                  fullWidth: true,
-                  required: true,
-                },
-              }}
-            />
+            <Box>
+              <DatePicker
+                label="Vigente Desde"
+                value={formData.fecha}
+                onChange={(newValue) => handleChange("fecha", newValue)}
+                slotProps={{
+                  textField: {
+                    size: 'small',
+                    fullWidth: true,
+                    required: true,
+                    error: !esEdicion && !!valorExistente,
+                    helperText: !esEdicion && valorExistente
+                      ? `Ya existe un Valor JUS para esta fecha (ID: ${valorExistente.id}, Valor: ${formatCurrency(valorExistente.valor, "ARS")})`
+                      : "",
+                  },
+                }}
+              />
+              {!esEdicion && valorExistente && (
+                <Chip
+                  label={`Valor existente: ${formatCurrency(valorExistente.valor, "ARS")} - Editar ID: ${valorExistente.id}`}
+                  size="small"
+                  color="warning"
+                  sx={{ mt: 1 }}
+                  onClick={() => nav(`/configuracion/valorjus/editar/${valorExistente.id}?categoriaId=${categoriaId}`)}
+                  style={{ cursor: 'pointer' }}
+                />
+              )}
+            </Box>
 
             <Box>
               <TF
@@ -202,7 +298,7 @@ export default function ValorJUSForm() {
           <Button
             type="submit"
             variant="contained"
-            disabled={saveMut.isPending || !isValidValor || !formData.fecha}
+            disabled={saveMut.isPending || !isValidValor || !formData.fecha || (!esEdicion && !!valorExistente)}
           >
             {saveMut.isPending ? "Guardando..." : esEdicion ? "Actualizar" : "Crear"}
           </Button>

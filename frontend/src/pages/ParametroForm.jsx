@@ -57,6 +57,7 @@ export default function ParametroForm() {
     nombre: "",
     orden: 0,
     activo: true,
+    parentId: "",
   });
 
   // Cargar categorías
@@ -80,13 +81,39 @@ export default function ParametroForm() {
         nombre: parametroData.nombre || "",
         orden: parametroData.orden || 0,
         activo: parametroData.activo ?? true,
+        parentId: parametroData.parentId ? String(parametroData.parentId) : "",
       });
     }
   }, [parametroData, esEdicion]);
 
+  // Determinar si la categoría requiere parent
+  const categoriaSeleccionada = categorias.find((c) => String(c.id) === String(categoriaId));
+  const requiereParent = categoriaSeleccionada?.codigo === 'TIPO_CASO' || categoriaSeleccionada?.codigo === 'RADICACION';
+  
+  // Determinar qué categoría de padres usar
+  const categoriaPadreCodigo = categoriaSeleccionada?.codigo === 'TIPO_CASO' ? 'RAMA_DERECHO' : 
+                                categoriaSeleccionada?.codigo === 'RADICACION' ? 'LOCALIDAD_RADICACION' : null;
+  
+  const categoriaPadre = categorias.find(c => c.codigo === categoriaPadreCodigo);
+  
+  // Cargar parámetros padres si la categoría lo requiere
+  const { data: parametrosPadres = [] } = useQuery({
+    queryKey: ["parametros-padres", categoriaPadreCodigo],
+    queryFn: () => api.get("/parametros", { 
+      params: { categoria: categoriaPadreCodigo, activo: true } 
+    }).then((r) => r.data),
+    enabled: !!categoriaPadreCodigo,
+  });
+
   const saveMut = useMutation({
     mutationFn: (data) => {
       const payload = { ...data, categoriaId: categoriaId || data.categoriaId };
+      // Asegurar que parentId sea null si viene vacío
+      if (payload.parentId !== undefined && (!payload.parentId || payload.parentId === '')) {
+        payload.parentId = null;
+      } else if (payload.parentId !== undefined) {
+        payload.parentId = Number(payload.parentId);
+      }
       if (esEdicion) {
         return api.put(`/parametros/${id}`, payload).then((r) => r.data);
       }
@@ -126,8 +153,6 @@ export default function ParametroForm() {
     }
     saveMut.mutate(formData);
   };
-
-  const categoriaSeleccionada = categorias.find((c) => String(c.id) === String(categoriaId));
 
   if (loadingParametro) {
     return (
@@ -178,6 +203,30 @@ export default function ParametroForm() {
             required
           />
         </Row>
+
+        {/* Fila Parent: solo si la categoría lo requiere */}
+        {requiereParent && (
+          <Row cols="1fr">
+            <TF
+              select
+              name="parentId"
+              label={categoriaPadre?.nombre || 'Padre'}
+              value={formData.parentId}
+              onChange={handleChange}
+              required={requiereParent}
+              helperText={`Seleccione la ${categoriaPadre?.nombre?.toLowerCase() || 'rama de derecho'} correspondiente`}
+            >
+              <MenuItem value="">
+                <em>Seleccione...</em>
+              </MenuItem>
+              {parametrosPadres.map((p) => (
+                <MenuItem key={p.id} value={String(p.id)}>
+                  {p.nombre}
+                </MenuItem>
+              ))}
+            </TF>
+          </Row>
+        )}
 
         {/* Fila 2: Orden y Activo */}
         <Row cols="1fr 1fr">

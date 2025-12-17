@@ -29,6 +29,9 @@ const miniWidth = 56;
 const APPBAR_H = 64;
 const STORAGE_KEY = "lex-sidebar-open";
 
+// ⚠️ ADJUNTOS DESHABILITADOS TEMPORALMENTE
+const ADJUNTOS_ENABLED = false;
+
 const navItems = [
   { to: "/", label: "Inicio", icon: <DashboardIcon />, modulo: "DASHBOARD" },
   { to: "/clientes", label: "Clientes", icon: <PeopleIcon />, modulo: "CLIENTES" },
@@ -38,7 +41,7 @@ const navItems = [
   { to: "/eventos", label: "Eventos", icon: <EventIcon />, modulo: "EVENTOS" },
   { to: "/finanzas", label: "Finanzas", icon: <AttachMoneyIcon />, modulo: "FINANZAS" },
   { to: "/reportes", label: "Reportes", icon: <AssessmentIcon />, modulo: "FINANZAS" },
-  { to: "/adjuntos", label: "Adjuntos", icon: <InsertDriveFileIcon />, modulo: "ADJUNTOS" },
+  ...(ADJUNTOS_ENABLED ? [{ to: "/adjuntos", label: "Adjuntos", icon: <InsertDriveFileIcon />, modulo: "ADJUNTOS" }] : []),
   { to: "/usuarios", label: "Usuarios", icon: <PersonIcon />, modulo: "USUARIOS" },
   { to: "/configuracion", label: "Configuración", icon: <SettingsIcon />, modulo: "CONFIGURACION" },
 ];

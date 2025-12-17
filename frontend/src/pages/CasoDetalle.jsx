@@ -1,5 +1,5 @@
 // src/pages/CasoDetalle.jsx
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useRef } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/axios";
@@ -14,7 +14,9 @@ import AddIcon from "@mui/icons-material/Add";
 
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc";
+import timezone from "dayjs/plugin/timezone";
 dayjs.extend(utc);
+dayjs.extend(timezone);
 
 // Reuso de componentes del detalle de caso
 import CasoTareas from "../components/detalle-caso/CasoTareas";
@@ -82,6 +84,9 @@ export default function CasoDetalle() {
 
   const initialTab = Number(sessionStorage.getItem("casoTab") || 0);
   const [tab, setTab] = useState(initialTab);
+  
+  // Ref para controlar el dialog de notas
+  const notasRef = useRef(null);
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["caso-detalle", id],
@@ -302,6 +307,21 @@ export default function CasoDetalle() {
               </Stack>
             </Grid>
 
+            {/* Último cambio de estado */}
+            <Grid item xs={12} sm={6} md={4}>
+              <Stack direction="row" spacing={1.25} alignItems="center">
+                <CalendarMonthOutlinedIcon sx={{ fontSize: 18, color: (t) => iconColor(t) }} />
+                <Box>
+                  <Typography variant="caption" color="text.secondary">
+                    Último cambio de estado
+                  </Typography>
+                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                    {caso?.fechaEstado ? dayjs.utc(caso.fechaEstado).local().format("DD/MM/YYYY") : "-"}
+                  </Typography>
+                </Box>
+              </Stack>
+            </Grid>
+
             {/* Radicación */}
             <Grid item xs={12} sm={6} md={4}>
               <Stack direction="row" spacing={1.25} alignItems="center">
@@ -312,21 +332,6 @@ export default function CasoDetalle() {
                   </Typography>
                   <Typography variant="body2" sx={{ fontWeight: 600 }}>
                     {caso?.radicacion?.nombre || "-"}
-                  </Typography>
-                </Box>
-              </Stack>
-            </Grid>
-
-            {/* Último cambio de estado */}
-            <Grid item xs={12} sm={6} md={4}>
-              <Stack direction="row" spacing={1.25} alignItems="center">
-                <CalendarMonthOutlinedIcon sx={{ fontSize: 18, color: (t) => iconColor(t) }} />
-                <Box>
-                  <Typography variant="caption" color="text.secondary">
-                    Último cambio de estado
-                  </Typography>
-                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                    {caso?.fechaEstado ? dayjs.utc(caso.fechaEstado).format("DD/MM/YYYY") : "-"}
                   </Typography>
                 </Box>
               </Stack>
@@ -401,7 +406,7 @@ export default function CasoDetalle() {
             {canViewFinanzas && <Tab label={`Ingresos (${ingresos.length})`} id="tab-4" />}
             <Tab label="Notas" id="tab-5" />
             <Tab label="Timeline" id="tab-6" />
-            <Tab label="Adjuntos" id="tab-7" />
+            {ADJUNTOS_ENABLED && <Tab label="Adjuntos" id="tab-7" />}
           </Tabs>
 
           {((tab === 0 && canCrearTarea) || (tab === 1 && canCrearEvento) || ((tab === 2 || tab === 3 || tab === 4) && canCrearFinanzas)) && (
@@ -434,6 +439,15 @@ export default function CasoDetalle() {
                 </Button>
               </span>
             </Tooltip>
+          )}
+          {tab === 5 && (
+            <Button
+              variant="contained"
+              size="small"
+              onClick={() => notasRef.current?.abrirDialogNueva()}
+            >
+              + Nota
+            </Button>
           )}
         </Box>
 
@@ -538,7 +552,7 @@ export default function CasoDetalle() {
           )}
 
           <TabPanel value={tab} index={5}>
-            <CasoNotas casoId={Number(id)} />
+            <CasoNotas ref={notasRef} casoId={Number(id)} />
           </TabPanel>
 
           <TabPanel value={tab} index={6}>
@@ -550,9 +564,11 @@ export default function CasoDetalle() {
             />
           </TabPanel>
 
-          <TabPanel value={tab} index={7}>
-            <CasoAdjuntos casoId={Number(id)} />
-          </TabPanel>
+          {ADJUNTOS_ENABLED && (
+            <TabPanel value={tab} index={7}>
+              <CasoAdjuntos casoId={Number(id)} />
+            </TabPanel>
+          )}
         </Box>
       </Paper>
       {/* Footer acciones */}

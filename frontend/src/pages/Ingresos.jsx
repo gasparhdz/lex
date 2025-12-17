@@ -1,6 +1,6 @@
 // src/pages/Ingresos.jsx
-import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useMemo, useState, useEffect } from "react";
+import { useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "@mui/material/styles";
 import { usePermisos } from "../auth/usePermissions";
@@ -29,7 +29,7 @@ const DEFAULT_PAGESIZE = 10;
 // debounce simple
 function useDebounced(value, delay = 350) {
   const [debounced, setDebounced] = useState(value);
-  useMemo(() => {
+  useEffect(() => {
     const id = setTimeout(() => setDebounced(value), delay);
     return () => clearTimeout(id);
   }, [value, delay]);
@@ -68,32 +68,86 @@ const displayCliente = (c) => {
   if (a && n) return `${a}, ${n}`;
   return a || n || "Sin nombre";
 };
+
+const displayExpte = (caso) => {
+  if (!caso) return "-";
+  const n =
+    (caso.nroExpte ?? caso.expte ?? caso.numeroExpediente ?? caso.numero ?? "")
+      .toString()
+      .trim();
+  // Si no hay número de expediente, mostrar la carátula
+  if (!n) {
+    const caratula = (caso.caratula || "").trim();
+    return caratula || (caso.id ? `#${caso.id}` : "-");
+  }
+  return n;
+};
 const getClienteKey = (row) =>
   (displayCliente(row.cliente) || "")
     .normalize?.("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toUpperCase();
 
+const toInt = (v, def) => {
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) && n >= 0 ? n : def;
+};
+const toOrder = (v) => (v === "asc" ? "asc" : "desc");
+const toSortBy = (v) => {
+  if (!v) return "fecha";
+  return ["fecha", "creado", "actualizado", "monto", "cliente", "caso", "concepto"].includes(v) ? v : "fecha";
+};
+
 /* ---------- componente ---------- */
 export default function Ingresos() {
   const nav = useNavigate();
+  const location = useLocation();
   const qc = useQueryClient();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
+  const [searchParams, setSearchParams] = useSearchParams();
   
   // Verificaciones de permisos
   const { canCrear, canEditar, canEliminar } = usePermisos('FINANZAS');
 
-  // estado UI
-  const [page, setPage] = useState(0); // 0-based en UI
-  const [pageSize, setPageSize] = useState(DEFAULT_PAGESIZE);
-  const [search, setSearch] = useState("");
+  // Estado inicial tomado de la URL
+  const [page, setPage] = useState(toInt(searchParams.get("page"), 0));
+  const [pageSize, setPageSize] = useState(toInt(searchParams.get("pageSize"), DEFAULT_PAGESIZE));
+  const [search, setSearch] = useState(searchParams.get("search") ?? "");
   const debouncedSearch = useDebounced(search, 350);
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  const [from, setFrom] = useState(searchParams.get("from") ?? "");
+  const [to, setTo] = useState(searchParams.get("to") ?? "");
   // sortBy: 'fecha' | 'creado' | 'actualizado' (server) | 'monto' | 'cliente' (client)
-  const [sortBy, setSortBy] = useState("fecha");
-  const [sortDir, setSortDir] = useState("desc");
+  const [sortBy, setSortBy] = useState(toSortBy(searchParams.get("sortBy")));
+  const [sortDir, setSortDir] = useState(toOrder(searchParams.get("sortDir")));
+
+  // Mantener URL en sync
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (page) next.set("page", String(page));
+    if (pageSize !== DEFAULT_PAGESIZE) next.set("pageSize", String(pageSize));
+    if (debouncedSearch?.trim()) next.set("search", debouncedSearch.trim());
+    if (sortBy !== "fecha") next.set("sortBy", sortBy);
+    if (sortDir !== "desc") next.set("sortDir", sortDir);
+    if (from) next.set("from", from);
+    if (to) next.set("to", to);
+
+    const changed = next.toString() !== searchParams.toString();
+    if (changed) setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, pageSize, debouncedSearch, sortBy, sortDir, from, to]);
+
+  // Si cambian externamente los searchParams, actualizamos el estado local
+  useEffect(() => {
+    setPage(toInt(searchParams.get("page"), 0));
+    setPageSize(toInt(searchParams.get("pageSize"), DEFAULT_PAGESIZE));
+    setSearch(searchParams.get("search") ?? "");
+    setSortBy(toSortBy(searchParams.get("sortBy")));
+    setSortDir(toOrder(searchParams.get("sortDir")));
+    setFrom(searchParams.get("from") ?? "");
+    setTo(searchParams.get("to") ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams.toString()]);
 
 
   // confirm eliminar
@@ -144,34 +198,48 @@ export default function Ingresos() {
   const rows = data?.rows ?? data?.data ?? []; // por si quedó viejo el cliente
   const total = data?.total ?? 0;
 
-  // ordenamiento local para 'monto' y 'cliente'
+  // ordenamiento local para 'monto', 'cliente', 'caso', 'concepto'
   const sortedRows = useMemo(() => {
     if (!Array.isArray(rows)) return [];
-    if (["monto", "cliente"].includes(sortBy)) {
+    if (["monto", "cliente", "caso", "concepto"].includes(sortBy)) {
       const dir = sortDir === "asc" ? 1 : -1;
       const copy = [...rows];
 
-      if (sortBy === "cliente") {
-        return copy.sort((a, b) => {
-          const A = getClienteKey(a);
-          const B = getClienteKey(b);
-          if (!A && !B) return 0;
-          if (!A) return 1;
-          if (!B) return -1;
-          return A.localeCompare(B) * dir;
-        });
-      }
-
-      // monto ARS
       return copy.sort((a, b) => {
-        const aN = Number(totalARS(a));
-        const bN = Number(totalARS(b));
-        const aNull = !Number.isFinite(aN);
-        const bNull = !Number.isFinite(bN);
-        if (aNull && bNull) return 0;
-        if (aNull) return 1;
-        if (bNull) return -1;
-        return (aN < bN ? -1 : 1) * dir;
+        let aVal, bVal;
+        
+        switch (sortBy) {
+          case "cliente": {
+            const A = getClienteKey(a);
+            const B = getClienteKey(b);
+            if (!A && !B) return 0;
+            if (!A) return 1;
+            if (!B) return -1;
+            return A.localeCompare(B) * dir;
+          }
+          case "caso": {
+            aVal = displayExpte(a.caso).toLowerCase();
+            bVal = displayExpte(b.caso).toLowerCase();
+            return aVal.localeCompare(bVal) * dir;
+          }
+          case "concepto": {
+            aVal = (a.tipo?.nombre || a.tipo?.codigo || "").toLowerCase();
+            bVal = (b.tipo?.nombre || b.tipo?.codigo || "").toLowerCase();
+            return aVal.localeCompare(bVal) * dir;
+          }
+          case "monto": {
+            aVal = Number(totalARS(a));
+            bVal = Number(totalARS(b));
+            const aNull = !Number.isFinite(aVal);
+            const bNull = !Number.isFinite(bVal);
+            if (aNull && bNull) return 0;
+            if (aNull) return 1;
+            if (bNull) return -1;
+            return (aVal < bVal ? -1 : 1) * dir;
+          }
+          default:
+            return 0;
+        }
       });
     }
     // para 'fecha/creado/actualizado' dejamos orden del server
@@ -180,7 +248,7 @@ export default function Ingresos() {
 
   const handleSort = (col) => {
     const serverAllowed = new Set(["fecha", "creado", "actualizado"]);
-    const clientAllowed = new Set(["monto", "cliente"]);
+    const clientAllowed = new Set(["monto", "cliente", "caso", "concepto"]);
 
     if (serverAllowed.has(col) || clientAllowed.has(col)) {
       if (sortBy === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -193,10 +261,10 @@ export default function Ingresos() {
   };
 
   const onCrear = () =>
-    nav("/finanzas/ingresos/nuevo", { state: { from: "/finanzas?tab=ingresos" } });
+    nav("/finanzas/ingresos/nuevo", { state: { from: { pathname: "/finanzas", search: "?tab=ingresos" } } });
   
   const onEditar = (row) =>
-    nav(`/finanzas/ingresos/editar/${row.id}`, { state: { from: "/finanzas?tab=ingresos" } });
+    nav(`/finanzas/ingresos/editar/${row.id}`, { state: { from: { pathname: "/finanzas", search: "?tab=ingresos" } } });
   
   const pedirConfirmarEliminar = (row) =>
     setConfirm({
@@ -387,7 +455,7 @@ export default function Ingresos() {
             SelectProps={{ native: true }}
           >
             <option value="fecha">Fecha</option>
-            <option value="monto">Monto (ARS)</option>
+            <option value="monto">Importe</option>
             <option value="cliente">Cliente (A–Z)</option>
             <option value="creado">Creado</option>
             <option value="actualizado">Actualizado</option>
@@ -438,7 +506,37 @@ export default function Ingresos() {
               },
             }}
           >
-            <TableCell sx={{ width: 140 }} sortDirection={sortBy === "fecha" ? sortDir : false}>
+            <TableCell sx={{ width: 260 }} sortDirection={sortBy === "cliente" ? sortDir : false}>
+              <TableSortLabel
+                active={sortBy === "cliente"}
+                direction={sortBy === "cliente" ? sortDir : "asc"}
+                onClick={() => handleSort("cliente")}
+              >
+                Cliente
+              </TableSortLabel>
+            </TableCell>
+
+            <TableCell sx={{ width: 280 }} sortDirection={sortBy === "caso" ? sortDir : false}>
+              <TableSortLabel
+                active={sortBy === "caso"}
+                direction={sortBy === "caso" ? sortDir : "asc"}
+                onClick={() => handleSort("caso")}
+              >
+                Expte
+              </TableSortLabel>
+            </TableCell>
+
+            <TableCell sx={{ width: 130 }} sortDirection={sortBy === "concepto" ? sortDir : false}>
+              <TableSortLabel
+                active={sortBy === "concepto"}
+                direction={sortBy === "concepto" ? sortDir : "asc"}
+                onClick={() => handleSort("concepto")}
+              >
+                Concepto
+              </TableSortLabel>
+            </TableCell>
+
+            <TableCell sx={{ width: 130 }} sortDirection={sortBy === "fecha" ? sortDir : false}>
               <TableSortLabel
                 active={sortBy === "fecha"}
                 direction={sortBy === "fecha" ? sortDir : "asc"}
@@ -448,27 +546,13 @@ export default function Ingresos() {
               </TableSortLabel>
             </TableCell>
 
-            <TableCell>Descripción</TableCell>
-
-            <TableCell sx={{ width: 260 }} sortDirection={sortBy === "cliente" ? sortDir : false}>
-              <TableSortLabel
-                active={sortBy === "cliente"}
-                direction={sortBy === "cliente" ? sortDir : "asc"}
-                onClick={() => handleSort("cliente")}
-              >
-                Cliente / Expte
-              </TableSortLabel>
-            </TableCell>
-
-            <TableCell sx={{ width: 160 }}>Tipo</TableCell>
-
             <TableCell sx={{ width: 160 }} align="right" sortDirection={sortBy === "monto" ? sortDir : false}>
               <TableSortLabel
                 active={sortBy === "monto"}
                 direction={sortBy === "monto" ? sortDir : "asc"}
                 onClick={() => handleSort("monto")}
               >
-                Monto (ARS)
+                Importe
               </TableSortLabel>
             </TableCell>
 
@@ -482,28 +566,27 @@ export default function Ingresos() {
           {isFetching && rows.length === 0
             ? Array.from({ length: 8 }).map((_, i) => (
                 <TableRow key={`sk-${i}`}>
+                  <TableCell><Skeleton width="80%" /></TableCell>
+                  <TableCell><Skeleton width="50%" /></TableCell>
+                  <TableCell><Skeleton width="50%" /></TableCell>
                   <TableCell><Skeleton width={90} /></TableCell>
-                  <TableCell><Skeleton width="60%" /></TableCell>
-                  <TableCell><Skeleton width="70%" /></TableCell>
-                  <TableCell><Skeleton width={100} /></TableCell>
                   <TableCell align="right"><Skeleton width={80} /></TableCell>
                   <TableCell align="center"><Skeleton width={100} /></TableCell>
                 </TableRow>
               ))
             : (sortedRows.length ? sortedRows : rows).map((r) => (
                 <TableRow key={r.id} hover>
-                  <TableCell>{toDMYLocal(r.fechaIngreso)}</TableCell>
-
-                  <TableCell sx={{ maxWidth: 420, whiteSpace: "nowrap", textOverflow: "ellipsis", overflow: "hidden" }}>
-                    {r.descripcion || "-"}
-                  </TableCell>
-
-                  <TableCell sx={{ maxWidth: 420, whiteSpace: "nowrap", textOverflow: "ellipsis", overflow: "hidden" }}>
+                  <TableCell sx={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                     {displayCliente(r.cliente)}
-                    {r.caso ? ` — Expte ${r.caso.nroExpte}` : ""}
                   </TableCell>
 
-                  <TableCell>{r.tipo?.nombre || r.tipo?.codigo || "-"}</TableCell>
+                  <TableCell>{displayExpte(r.caso)}</TableCell>
+
+                  <TableCell sx={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {r.tipo?.nombre || r.tipo?.codigo || "—"}
+                  </TableCell>
+
+                  <TableCell>{toDMYLocal(r.fechaIngreso)}</TableCell>
 
                   <TableCell align="right">{formatCurrency(totalARS(r), "ARS")}</TableCell>
 
@@ -564,10 +647,9 @@ export default function Ingresos() {
                 <Box sx={{ flex: 1, minWidth: 0 }}>
                   <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
                     {displayCliente(r.cliente)}
-                    {r.caso ? ` · Expte: ${r.caso.nroExpte}` : ""}
                   </Typography>
                   <Typography variant="caption" sx={{ opacity: 0.75 }}>
-                    Fecha: {toDMYLocal(r.fechaIngreso)}
+                    Expte: {displayExpte(r.caso)} · Fecha: {toDMYLocal(r.fechaIngreso)}
                   </Typography>
 
                   <Box sx={{ mt: 0.5, display: "flex", gap: 1, flexWrap: "wrap" }}>
@@ -577,7 +659,7 @@ export default function Ingresos() {
                     <Chip
                       size="small"
                       color="info"
-                      label={`Monto: ${formatCurrency(totalARS(r), "ARS")}`}
+                      label={`Importe: ${formatCurrency(totalARS(r), "ARS")}`}
                     />
                   </Box>
                 </Box>

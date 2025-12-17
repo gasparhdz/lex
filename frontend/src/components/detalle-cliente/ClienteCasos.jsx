@@ -260,17 +260,18 @@ export default function ClienteCasos({
         Aún no hay casos asociados a este cliente. Puedes crear uno nuevo desde el botón "Nuevo caso".
       </Alert>
     ) : (
-      <List
-        disablePadding
-        sx={{
-          "& .MuiListItemButton-root": {
-            px: 1,
-            borderBottom: (t) => `1px solid ${t.palette.divider}`,
-            "&:last-of-type": { borderBottom: "none" },
-            "&:hover": { backgroundColor: (t) => t.palette.action.hover },
-          },
-        }}
-      >
+      <Box sx={{ maxHeight: 400, overflowY: 'auto', overflowX: 'hidden' }}>
+        <List
+          disablePadding
+          sx={{
+            "& .MuiListItemButton-root": {
+              px: 1,
+              borderBottom: (t) => `1px solid ${t.palette.divider}`,
+              "&:last-of-type": { borderBottom: "none" },
+              "&:hover": { backgroundColor: (t) => t.palette.action.hover },
+            },
+          }}
+        >
         {casos.map((c) => {
           const handleRowClick = () => onItemClick && onItemClick(c);
           return isMobile ? (
@@ -292,6 +293,7 @@ export default function ClienteCasos({
           );
         })}
       </List>
+      </Box>
     );
 
   if (embedded) return Content;

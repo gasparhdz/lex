@@ -1,7 +1,7 @@
 // src/pages/Tareas.jsx
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import api from "../api/axios";
 import { usePermisos } from "../auth/usePermissions";
 import {
@@ -27,7 +27,7 @@ import * as XLSX from "xlsx";
 /* ---------- helpers ---------- */
 function useDebounced(value, delay = 300) {
   const [debounced, setDebounced] = useState(value);
-  useMemo(() => {
+  useEffect(() => {
     const id = setTimeout(() => setDebounced(value), delay);
     return () => clearTimeout(id);
   }, [value, delay]);
@@ -90,28 +90,66 @@ const isVencida = (t) => {
   return limite < hoy;
 };
 
+const toInt = (v, def) => {
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) && n >= 0 ? n : def;
+};
+const toOrder = (v) => (v === "desc" ? "desc" : "asc");
+const toOrderBy = (v) => {
+  if (!v) return "fechaLimite";
+  return ["fechaLimite", "titulo", "cliente", "caso", "prioridad", "completada"].includes(v) ? v : "fechaLimite";
+};
+
 /* ---------- componente ---------- */
 export default function Tareas() {
   const nav = useNavigate();
+  const location = useLocation();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
+  const [searchParams, setSearchParams] = useSearchParams();
   const { canCrear, canEditar, canEliminar } = usePermisos('TAREAS');
   const queryClient = useQueryClient();
 
-  // Estado UI
-  const [page, setPage] = useState(0);
-  const [pageSize, setPageSize] = useState(10);
-  const [search, setSearch] = useState("");
+  // Estado inicial tomado de la URL
+  const [page, setPage] = useState(toInt(searchParams.get("page"), 0));
+  const [pageSize, setPageSize] = useState(toInt(searchParams.get("pageSize"), 10));
+  const [search, setSearch] = useState(searchParams.get("search") ?? "");
   const debouncedSearch = useDebounced(search, 300);
-
+  const [orderBy, setOrderBy] = useState(toOrderBy(searchParams.get("orderBy")));
+  const [order, setOrder] = useState(toOrder(searchParams.get("order")));
+  
   // Filtros
-  const [prioridadId, setPrioridadId] = useState(""); // "" = todas
-  const [completada, setCompletada] = useState("");   // ""=todas, "true", "false"
+  const [prioridadId, setPrioridadId] = useState(searchParams.get("prioridadId") ?? ""); // "" = todas
+  const [completada, setCompletada] = useState(searchParams.get("completada") ?? "");   // ""=todas, "true", "false"
   const { data: prioridades = [] } = useQuery({ queryKey: ["prioridades-tarea"], queryFn: fetchPrioridades, staleTime: 5 * 60 * 1000 });
 
-  // Orden
-  const [orderBy, setOrderBy] = useState("fechaLimite");
-  const [order, setOrder] = useState("asc");
+  // Mantener URL en sync
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (page) next.set("page", String(page));
+    if (pageSize !== 10) next.set("pageSize", String(pageSize));
+    if (debouncedSearch?.trim()) next.set("search", debouncedSearch.trim());
+    if (orderBy !== "fechaLimite") next.set("orderBy", orderBy);
+    if (order !== "asc") next.set("order", order);
+    if (prioridadId) next.set("prioridadId", prioridadId);
+    if (completada) next.set("completada", completada);
+
+    const changed = next.toString() !== searchParams.toString();
+    if (changed) setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, pageSize, debouncedSearch, orderBy, order, prioridadId, completada]);
+
+  // Si cambian externamente los searchParams, actualizamos el estado local
+  useEffect(() => {
+    setPage(toInt(searchParams.get("page"), 0));
+    setPageSize(toInt(searchParams.get("pageSize"), 10));
+    setSearch(searchParams.get("search") ?? "");
+    setOrderBy(toOrderBy(searchParams.get("orderBy")));
+    setOrder(toOrder(searchParams.get("order")));
+    setPrioridadId(searchParams.get("prioridadId") ?? "");
+    setCompletada(searchParams.get("completada") ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams.toString()]);
 
   const [deletingId, setDeletingId] = useState(null);
   const [confirm, setConfirm] = useState({ open: false, id: null, name: "" });
@@ -140,7 +178,7 @@ export default function Tareas() {
   const total = data?.total ?? 0;
 
   const handleSort = (prop) => {
-    if (!["fechaLimite", "titulo", "createdAt"].includes(prop)) return;
+    if (!["fechaLimite", "titulo", "cliente", "caso", "prioridad", "completada"].includes(prop)) return;
     setPage(0);
     if (orderBy === prop) setOrder((prev) => (prev === "asc" ? "desc" : "asc"));
     else {
@@ -156,7 +194,7 @@ export default function Tareas() {
   };
 
   // Acciones
-  const editar = (id) => nav(`/tareas/editar/${id}`, { state: { from: "/tareas" } });
+  const editar = (id) => nav(`/tareas/editar/${id}`, { state: { from: location } });
   const pedirConfirmarEliminar = (t) => {
     setConfirm({ open: true, id: t.id, name: t.titulo });
   };
@@ -523,12 +561,44 @@ export default function Tareas() {
               </TableSortLabel>
             </TableCell>
 
-            <TableCell sx={{ width: 240 }}>Cliente</TableCell>
-            <TableCell sx={{ width: 160 }}>Expte</TableCell>
+            <TableCell sx={{ width: 240 }} sortDirection={orderBy === "cliente" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "cliente"}
+                direction={orderBy === "cliente" ? order : "asc"}
+                onClick={() => handleSort("cliente")}
+              >
+                Cliente
+              </TableSortLabel>
+            </TableCell>
+            <TableCell sx={{ width: 160 }} sortDirection={orderBy === "caso" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "caso"}
+                direction={orderBy === "caso" ? order : "asc"}
+                onClick={() => handleSort("caso")}
+              >
+                Expte
+              </TableSortLabel>
+            </TableCell>
 
-            <TableCell sx={{ width: 110 }}>Prioridad</TableCell>
+            <TableCell sx={{ width: 110 }} sortDirection={orderBy === "prioridad" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "prioridad"}
+                direction={orderBy === "prioridad" ? order : "asc"}
+                onClick={() => handleSort("prioridad")}
+              >
+                Prioridad
+              </TableSortLabel>
+            </TableCell>
 
-            <TableCell sx={{ width: 110 }}>Completada</TableCell>
+            <TableCell sx={{ width: 110 }} sortDirection={orderBy === "completada" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "completada"}
+                direction={orderBy === "completada" ? order : "asc"}
+                onClick={() => handleSort("completada")}
+              >
+                Completada
+              </TableSortLabel>
+            </TableCell>
 
             <TableCell sx={{ width: 170 }} sortDirection={orderBy === "fechaLimite" ? order : false}>
               <TableSortLabel

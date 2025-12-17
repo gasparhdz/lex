@@ -158,13 +158,53 @@ export default function GastoForm() {
   };
 
   // de dónde venimos para Volver/Cancelar
-  const backTo = React.useMemo(
-    () => location.state?.from || "/finanzas/gastos",
-    [location.state]
-  );
+  // Helper para normalizar backTo y preservar la pestaña activa
+  const normalizeBackTo = React.useMemo(() => {
+    const from = location.state?.from;
+    
+    // Si viene de un detalle (objeto con pathname)
+    if (from && typeof from === 'object' && from.pathname) {
+      // Si viene de /finanzas con search (tab=gastos), construir la URL completa
+      if (from.pathname === '/finanzas' && from.search) {
+        return from.pathname + from.search;
+      }
+      // Si viene de /finanzas pero sin tab, convertir a /finanzas?tab=gastos
+      if (from.pathname === '/finanzas' && !from.search) {
+        return "/finanzas?tab=gastos";
+      }
+      // Si viene de /finanzas/gastos (sin tab), convertir a /finanzas?tab=gastos
+      if (from.pathname === '/finanzas/gastos' || from.pathname.includes('/finanzas/gastos')) {
+        return "/finanzas?tab=gastos";
+      }
+      // Si tiene search, construir la URL completa
+      if (from.search) {
+        return from.pathname + from.search;
+      }
+      // Para otros casos (detalles de cliente/caso), usar el pathname
+      return from.pathname || from;
+    }
+    
+    // Si viene de una ruta de finanzas como string, convertir a formato con tab
+    const fromStr = typeof from === 'string' ? from : '';
+    if (fromStr.includes('/finanzas/gastos') || (fromStr === '/finanzas')) {
+      return "/finanzas?tab=gastos";
+    }
+    
+    // Si from es una string válida (ruta de detalle), usarla
+    if (fromStr && (fromStr.startsWith('/clientes/') || fromStr.startsWith('/casos/'))) {
+      return fromStr;
+    }
+    
+    // Default: volver a la pestaña de gastos en Finanzas
+    return "/finanzas?tab=gastos";
+  }, [location.state]);
+  
+  const backTo = normalizeBackTo;
+  
   const cameFromDetail = React.useMemo(() => {
     const from = location.state?.from || "";
-    return /^\/(clientes|casos)\//.test(from);
+    const fromPath = typeof from === 'object' ? from.pathname : from;
+    return /^\/(clientes|casos)\//.test(fromPath);
   }, [location.state]);
 
   const {
@@ -288,7 +328,7 @@ export default function GastoForm() {
     mutationFn: (payload) => createGasto(payload),
     onSuccess: () => {
       enqueueSnackbar("Gasto creado correctamente", { variant: "success" });
-      nav("/finanzas/gastos");
+      nav(backTo, { replace: true });
     },
     onError: (e) => {
       const msg = e?.response?.data?.publicMessage || e?.response?.data?.message || "Error al crear";
@@ -303,7 +343,7 @@ export default function GastoForm() {
       if (cameFromDetail) {
         nav(`/finanzas/gastos/${id}?mode=ver`, { replace: true, state: { from: backTo, mode: "ver" } });
       } else {
-        nav("/finanzas/gastos", { replace: true });
+        nav(backTo, { replace: true });
       }
     },
     onError: (e) => {
@@ -335,12 +375,12 @@ export default function GastoForm() {
 
   // ===== Handlers para Volver/Cancelar/Editar
   const handleBack = () => {
-    nav(backTo || "/finanzas/gastos");
+    nav(backTo || "/finanzas?tab=gastos");
   };
 
   const handleCancelEdit = () => {
     // Volver exactamente a la pantalla anterior (Detalle o Listado, según de dónde viniste)
-    nav(-1);
+    nav(backTo || "/finanzas?tab=gastos");
   };
 
   const handleGoEdit = () => {

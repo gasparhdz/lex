@@ -21,6 +21,7 @@ export default function ParametrosTab() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [categoriaSeleccionada, setCategoriaSeleccionada] = useState('');
+  const [parentIdFiltro, setParentIdFiltro] = useState('');
   const [abrirConfirm, setAbrirConfirm] = useState({ open: false, id: null, nombre: '' });
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(20);
@@ -35,18 +36,45 @@ export default function ParametrosTab() {
     return categorias.find(c => String(c.id) === String(categoriaSeleccionada));
   }, [categorias, categoriaSeleccionada]);
 
+  // Determinar si la categoría requiere filtro de parent
+  const requiereParent = categoria?.codigo === 'TIPO_CASO' || categoria?.codigo === 'RADICACION';
+  
+  // Determinar qué categoría de padres usar
+  const categoriaPadreCodigo = categoria?.codigo === 'TIPO_CASO' ? 'RAMA_DERECHO' : 
+                                categoria?.codigo === 'RADICACION' ? 'LOCALIDAD_RADICACION' : null;
+  
+  // Cargar parámetros padres si la categoría lo requiere
+  const { data: parametrosPadres = [] } = useQuery({
+    queryKey: ['parametros-padres', categoriaPadreCodigo],
+    queryFn: () => api.get('/parametros', { 
+      params: { categoria: categoriaPadreCodigo, activo: true } 
+    }).then(r => r.data),
+    enabled: !!categoriaPadreCodigo,
+  });
+
+  // Resetear filtro de parent cuando cambia la categoría
+  useEffect(() => {
+    setParentIdFiltro('');
+    setPage(0);
+  }, [categoriaSeleccionada]);
+
   const { data: parametrosResp = [], isFetching: loadingParams, refetch } = useQuery({
-    queryKey: ['parametros', categoriaSeleccionada, page, pageSize],
+    queryKey: ['parametros', categoriaSeleccionada, parentIdFiltro, page, pageSize],
     queryFn: () => {
       // Todas las categorías (virtuales o no) usan el mismo endpoint
-      return api.get('/parametros', { 
-        params: { 
-          categoriaId: categoriaSeleccionada, 
-          activo: false,
-          page: page + 1,
-          pageSize
-        } 
-      }).then(r => r.data);
+      const params = { 
+        categoriaId: categoriaSeleccionada, 
+        activo: false,
+        page: page + 1,
+        pageSize
+      };
+      
+      // Agregar filtro de parent si está seleccionado
+      if (parentIdFiltro && parentIdFiltro !== '') {
+        params.parentId = parentIdFiltro;
+      }
+      
+      return api.get('/parametros', { params }).then(r => r.data);
     },
     enabled: !!categoriaSeleccionada,
     keepPreviousData: true,
@@ -145,6 +173,29 @@ export default function ParametrosTab() {
           </MenuItem>
         ))}
       </TextField>
+
+      {requiereParent && (
+        <TextField
+          select
+          label={categoriaPadreCodigo === 'RAMA_DERECHO' ? 'Rama de Derecho' : 'Localidad'}
+          value={parentIdFiltro}
+          onChange={(e) => {
+            setParentIdFiltro(e.target.value);
+            setPage(0);
+          }}
+          size="small"
+          sx={{ minWidth: 200 }}
+        >
+          <MenuItem value="">
+            <em>Todos</em>
+          </MenuItem>
+          {parametrosPadres.map((p) => (
+            <MenuItem key={p.id} value={String(p.id)}>
+              {p.nombre}
+            </MenuItem>
+          ))}
+        </TextField>
+      )}
 
       {categoria && canCrear && (
         <Button

@@ -4,6 +4,7 @@ import { useForm, Controller, useWatch } from "react-hook-form";
 import { useNavigate, useParams, useSearchParams, useLocation } from "react-router-dom";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { usePermiso } from "../auth/usePermissions";
+import { useAuth } from "../auth/AuthContext";
 import {
   Paper, Box, TextField, MenuItem, Button, Typography, Alert, CircularProgress,
   Switch, FormControlLabel, Autocomplete, Divider, Table, TableHead, TableRow,
@@ -25,6 +26,7 @@ import {
   listSubtareas, addSubtarea, updateSubtarea, deleteSubtarea,
   reorderSubtareas, toggleSubtarea
 } from "../api/tareas";
+import { fetchUsuarios } from "../api/usuarios";
 import UploadAdjuntoButton from "../components/adjuntos/UploadAdjuntoButton";
 
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
@@ -106,6 +108,9 @@ export default function TareaForm() {
   const canCrearTarea = usePermiso('TAREAS', 'crear');
   const canEditarTarea = usePermiso('TAREAS', 'editar');
   const canVerTarea = usePermiso('TAREAS', 'ver');
+  
+  // Usuario actual
+  const { user } = useAuth();
 
   // Redirigir si no tiene permisos
   useEffect(() => {
@@ -149,6 +154,7 @@ export default function TareaForm() {
       prioridadId: "",
       fechaLimite: null,
       recordatorio: null,
+      asignadoA: "",
       completada: false,
       activo: true,
     },
@@ -156,6 +162,7 @@ export default function TareaForm() {
   
   const watchClienteId = watch('clienteId');
   const watchCasoId = watch('casoId');
+  const fechaLimiteWatch = watch('fechaLimite');
 
   // ========= Prefill / retorno =========
   const prefillState = location.state?.prefill || null; // { clienteId?, casoId? }
@@ -203,6 +210,12 @@ export default function TareaForm() {
     staleTime: 5 * 60 * 1000,
   });
 
+  const { data: usuarios = [], isLoading: usrLoading } = useQuery({
+    queryKey: ["usuarios-all"],
+    queryFn: () => fetchUsuarios({ page: 1, pageSize: 500, activo: true }),
+    staleTime: 5 * 60 * 1000,
+  });
+
   /* ======= Carga inicial en edición ======= */
   useEffect(() => {
     if (!tarea) return;
@@ -218,6 +231,7 @@ export default function TareaForm() {
       prioridadId,
       fechaLimite:  toDate(tarea.fechaLimite),
       recordatorio: toDate(tarea.recordatorio),
+      asignadoA:    tarea.asignadoA ? String(tarea.asignadoA) : "",
       completada:   Boolean(tarea.completada),
       activo:       tarea.activo ?? true,
     });
@@ -238,7 +252,7 @@ export default function TareaForm() {
     }
   }, [editMode, searchParams, setValue]);
 
-  // ALTA: precargar cliente/caso
+  // ALTA: precargar cliente/caso y asignar usuario actual
   useEffect(() => {
     if (editMode) return;
     const cid = prefillState?.clienteId ?? prefillQS.clienteId;
@@ -246,7 +260,12 @@ export default function TareaForm() {
 
     if (cid) setValue("clienteId", String(cid), { shouldDirty: false });
     if (casoId) setValue("casoId", String(casoId), { shouldDirty: false });
-  }, [editMode, prefillState, prefillQS.clienteId, prefillQS.casoId, setValue]);
+    
+    // Pre-llenar con el usuario actual si existe
+    if (user?.id) {
+      setValue("asignadoA", String(user.id), { shouldDirty: false });
+    }
+  }, [editMode, prefillState, prefillQS.clienteId, prefillQS.casoId, setValue, user]);
 
   /* ======= Mutations ======= */
   const crearMut = useMutation({
@@ -279,7 +298,7 @@ export default function TareaForm() {
     const payload = limpiarPayload({ ...values });
 
     // IDs
-    for (const k of ["clienteId", "casoId", "prioridadId"]) {
+    for (const k of ["clienteId", "casoId", "prioridadId", "asignadoA"]) {
       if (payload[k] != null && payload[k] !== "") payload[k] = Number(payload[k]);
     }
 
@@ -494,8 +513,8 @@ export default function TareaForm() {
             />
           </Row>
 
-          {/* ===== Título – Prioridad – Completada ===== */}
-          <Row cols="2fr 1.2fr 1fr">
+          {/* ===== Título – Prioridad ===== */}
+          <Row cols="2fr">
             <Controller
               name="titulo"
               control={control}
@@ -510,7 +529,12 @@ export default function TareaForm() {
               )}
             />
 
-            <Controller
+          </Row>
+
+          {/* ===== Asignado a – Completada ===== */}
+          <Row cols="0.8fr 1fr 1fr 1fr 0.7fr">
+            
+          <Controller
               name="prioridadId"
               control={control}
               render={({ field }) => (
@@ -522,6 +546,84 @@ export default function TareaForm() {
                     </MenuItem>
                   ))}
                 </TF>
+              )}
+            />
+            <Controller
+              name="asignadoA"
+              control={control}
+              render={({ field }) => (
+                <TF select label="Asignado a" {...field}>
+                  <MenuItem value="">{ "(sin asignar)" }</MenuItem>
+                  {usuarios.map((u) => (
+                    <MenuItem key={u.id} value={String(u.id)}>
+                      {`${u.nombre} ${u.apellido}`}
+                    </MenuItem>
+                  ))}
+                </TF>
+              )}
+            />
+
+            <Controller
+              name="fechaLimite"
+              control={control}
+              rules={{
+                validate: (fechaLimite) => {
+                  if (fechaLimite && fechaLimite < new Date()) {
+                    return "La fecha límite no puede ser anterior a la fecha actual";
+                  }
+                  return true;
+                }
+              }}
+              render={({ field }) => (
+                <DateTimePicker
+                  label="Fecha límite"
+                  value={field.value}
+                  onChange={(v) => field.onChange(v)}
+                  disabled={isView}
+                  slotProps={{
+                    textField: { 
+                      fullWidth: true, 
+                      size: "small", 
+                      InputProps: { readOnly: true },
+                      error: !!errors.fechaLimite,
+                      helperText: errors.fechaLimite?.message,
+                    },
+                    actionBar: { actions: [] },
+                    openPickerButton: { disabled: isView },
+                  }}
+                />
+              )}
+            />
+
+            <Controller
+              name="recordatorio"
+              control={control}
+              rules={{
+                validate: (recordatorio) => {
+                  if (recordatorio && fechaLimiteWatch && recordatorio > fechaLimiteWatch) {
+                    return "El recordatorio no puede ser posterior a la fecha límite";
+                  }
+                  return true;
+                }
+              }}
+              render={({ field }) => (
+                <DateTimePicker
+                  label="Recordatorio"
+                  value={field.value}
+                  onChange={(v) => field.onChange(v)}
+                  disabled={isView}
+                  slotProps={{
+                    textField: { 
+                      fullWidth: true, 
+                      size: "small", 
+                      InputProps: { readOnly: true },
+                      error: !!errors.recordatorio,
+                      helperText: errors.recordatorio?.message,
+                    },
+                    actionBar: { actions: [] },
+                    openPickerButton: { disabled: isView },
+                  }}
+                />
               )}
             />
 
@@ -540,45 +642,6 @@ export default function TareaForm() {
                     />
                   }
                   label="Completada"
-                />
-              )}
-            />
-          </Row>
-
-          {/* ===== Fechas ===== */}
-          <Row cols="1fr 1fr">
-            <Controller
-              name="fechaLimite"
-              control={control}
-              render={({ field }) => (
-                <DateTimePicker
-                  label="Fecha límite"
-                  value={field.value}
-                  onChange={(v) => field.onChange(v)}
-                  disabled={isView}
-                  slotProps={{
-                    textField: { fullWidth: true, size: "small", InputProps: { readOnly: true } },
-                    actionBar: { actions: [] },
-                    openPickerButton: { disabled: isView },
-                  }}
-                />
-              )}
-            />
-
-            <Controller
-              name="recordatorio"
-              control={control}
-              render={({ field }) => (
-                <DateTimePicker
-                  label="Recordatorio"
-                  value={field.value}
-                  onChange={(v) => field.onChange(v)}
-                  disabled={isView}
-                  slotProps={{
-                    textField: { fullWidth: true, size: "small", InputProps: { readOnly: true } },
-                    actionBar: { actions: [] },
-                    openPickerButton: { disabled: isView },
-                  }}
                 />
               )}
             />

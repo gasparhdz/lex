@@ -46,9 +46,16 @@ function numOrNull(v) {
 async function findValorJusSnapshot(fecha) {
   const d = fecha ? new Date(fecha) : null;
   let row = d
-    ? await prisma.valorJUS.findFirst({ where: { fecha: { lte: d } }, orderBy: { fecha: "desc" } })
+    ? await prisma.valorJUS.findFirst({
+        where: { deletedAt: null, activo: true, fecha: { lte: d } },
+        orderBy: { fecha: "desc" },
+      })
     : null;
-  if (!row) row = await prisma.valorJUS.findFirst({ orderBy: { fecha: "desc" } });
+  if (!row)
+    row = await prisma.valorJUS.findFirst({
+      where: { deletedAt: null, activo: true },
+      orderBy: { fecha: "desc" },
+    });
   return row?.valor ?? null;
 }
 
@@ -60,7 +67,6 @@ function normalizeHonorarioDTO(b = {}) {
     conceptoId: intOrNull(b.conceptoId),
     parteId: intOrNull(b.parteId),
     monedaId: intOrNull(b.monedaId),
-    politicaJusId: intOrNull(b.politicaJusId),
     jus: numOrNull(b.jus),
     montoPesos: numOrNull(b.montoPesos),
     valorJusRef: numOrNull(b.valorJusRef),
@@ -532,26 +538,12 @@ export async function crear(req, res, next) {
       return next({ status: 400, publicMessage: "Debe informar jus o montoPesos" });
     }
 
-    // Valor JUS ref si hace falta
+    // Valor JUS ref: siempre usar la fecha de regulación para el Honorario
     let warnings = [];
     if ((hasJus ^ hasPesos) && (dto.valorJusRef == null)) {
-      const poli = Number(dto.politicaJusId || 168); // default: FECHA_REGULACION
-      let vj = null;
-      if (poli === 169) {
-        // usar el valor actual
-        const row = await prisma.valorJUS.findFirst({
-          where: { deletedAt: null, activo: true },
-          orderBy: { fecha: "desc" },
-          select: { valor: true },
-        });
-        vj = row?.valor ?? null;
-      } else {
-        // usar la fecha de regulación
-        vj = await findValorJusSnapshot(dto.fechaRegulacion);
-      }
-
+      const vj = await findValorJusSnapshot(dto.fechaRegulacion);
       if (vj) dto.valorJusRef = vj;
-      else warnings.push("No se encontró Valor JUS según la política seleccionada; se guardará sin referencia.");
+      else warnings.push("No se encontró Valor JUS para la fecha de regulación; se guardará sin referencia.");
     }
     const userId = req.user?.id ?? null;
 
@@ -589,6 +581,7 @@ export async function crear(req, res, next) {
         diasPersonalizados,
         montoCuotaJus,
         montoCuotaPesos,
+        politicaJusId,
         cuotas, // si vienen explícitas
       }) => {
         // 2) Plan
@@ -601,6 +594,15 @@ export async function crear(req, res, next) {
           if (!periodicidadRow) throw { status: 400, publicMessage: "periodicidadId inválido" };
         }
 
+        // Calcular valorJusRef según política del honorario
+        // Para el plan, siempre se usa la fecha de regulación como referencia base
+        const hasJus = montoCuotaJus != null && Number(montoCuotaJus) > 0;
+        let planValorJusRef = null;
+        if (hasJus) {
+          // Usar la fecha de regulación del honorario como base
+          planValorJusRef = await findValorJusSnapshot(dto.fechaRegulacion);
+        }
+
         const plan = await tx.planPago.create({
           data: {
             honorarioId: nuevo.id,
@@ -609,9 +611,10 @@ export async function crear(req, res, next) {
             descripcion: null,
             fechaInicio: fechaPrimera ? new Date(fechaPrimera) : (dto.fechaRegulacion ?? new Date()),
             periodicidadId: periodicidadRow?.id ?? null,
+            politicaJusId: intOrNull(politicaJusId),
             montoCuotaJus: numOrNull(montoCuotaJus) ?? null,
             montoCuotaPesos: numOrNull(montoCuotaPesos) ?? null,
-            valorJusRef: null,
+            valorJusRef: planValorJusRef,
             createdBy: userId,
           },
         });
@@ -659,13 +662,24 @@ export async function crear(req, res, next) {
 
           for (let i = 0; i < n; i++) {
             const venc = addDays(start, stepDays * i);
+            let vj = null;
+            if (isJus) {
+              const poli = Number(politicaJusId || 168);
+              if (poli === 169) {
+                // AL_COBRO (169): valor según fecha de vencimiento de la cuota (dinámico)
+                vj = await findValorJusSnapshot(venc);
+              } else {
+                // FECHA_REGULACION (168): usar el valor del plan (constante, fecha de regulación)
+                vj = planValorJusRef;
+              }
+            }
             rows.push({
               planId: plan.id,
               numero: i + 1,
               vencimiento: venc,
               montoJus: isJus ? Number(montos[i]) : null,
               montoPesos: isJus ? null : Number(montos[i]),
-              valorJusRef: null,
+              valorJusRef: vj,
               estadoId: estadoCuotaId,  // ← default
               createdBy: userId,
             });
@@ -690,6 +704,7 @@ export async function crear(req, res, next) {
           diasPersonalizados: planIn.diasPersonalizados,
           montoCuotaJus: planIn.montoCuotaJus,
           montoCuotaPesos: planIn.montoCuotaPesos,
+          politicaJusId: planIn.politicaJusId,
           cuotas: planIn.cuotas,
         });
       } else {
@@ -702,6 +717,7 @@ export async function crear(req, res, next) {
           fechaPrimera: dto.fechaRegulacion ?? new Date(),
           montoCuotaJus: isJus ? Number(totalJus || 0) : null,
           montoCuotaPesos: !isJus ? Number(totalPesosRef || 0) : null,
+          politicaJusId: null, // Default sin política
         });
       }
 

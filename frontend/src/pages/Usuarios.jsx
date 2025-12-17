@@ -7,7 +7,7 @@ import {
   Paper, Table, TableHead, TableRow, TableCell, TableBody,
   Typography, Box, TextField, InputAdornment,
   Tooltip, Button, IconButton, Fab, Chip, Stack,
-  useMediaQuery, LinearProgress, Skeleton
+  useMediaQuery, LinearProgress, Skeleton, TableSortLabel
 } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
 import { enqueueSnackbar } from "notistack";
@@ -57,6 +57,8 @@ export default function Usuarios() {
 
   const [search, setSearch] = useState(searchParams.get("search") ?? "");
   const debouncedSearch = useDebounced(search, 300);
+  const [orderBy, setOrderBy] = useState(searchParams.get("orderBy") || "nombre");
+  const [order, setOrder] = useState(searchParams.get("order") || "asc");
 
   const [deletingId, setDeletingId] = useState(null);
   const [confirm, setConfirm] = useState({ open: false, id: null, name: "" });
@@ -65,10 +67,12 @@ export default function Usuarios() {
   useEffect(() => {
     const next = new URLSearchParams();
     if (debouncedSearch?.trim()) next.set("search", debouncedSearch.trim());
+    if (orderBy !== "nombre") next.set("orderBy", orderBy);
+    if (order !== "asc") next.set("order", order);
     const changed = next.toString() !== searchParams.toString();
     if (changed) setSearchParams(next, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedSearch]);
+  }, [debouncedSearch, orderBy, order]);
 
   const params = useMemo(
     () => ({
@@ -84,7 +88,46 @@ export default function Usuarios() {
     enabled: !!localStorage.getItem("token"),
   });
 
-  const usuariosFiltrados = usuarios;
+  const handleSort = (prop) => {
+    if (!["nombre", "email", "dni", "activo"].includes(prop)) return;
+    if (orderBy === prop) setOrder((prev) => (prev === "asc" ? "desc" : "asc"));
+    else {
+      setOrderBy(prop);
+      setOrder("asc");
+    }
+  };
+
+  const usuariosFiltrados = useMemo(() => {
+    if (!Array.isArray(usuarios)) return [];
+    const sorted = [...usuarios];
+    const dir = order === "asc" ? 1 : -1;
+    
+    sorted.sort((a, b) => {
+      let aVal, bVal;
+      switch (orderBy) {
+        case "nombre":
+          aVal = displayName(a).toLowerCase();
+          bVal = displayName(b).toLowerCase();
+          return aVal.localeCompare(bVal) * dir;
+        case "email":
+          aVal = (a.email || "").toLowerCase();
+          bVal = (b.email || "").toLowerCase();
+          return aVal.localeCompare(bVal) * dir;
+        case "dni":
+          aVal = (a.dni || "").toString();
+          bVal = (b.dni || "").toString();
+          return aVal.localeCompare(bVal) * dir;
+        case "activo":
+          aVal = a.activo ? 1 : 0;
+          bVal = b.activo ? 1 : 0;
+          return (aVal - bVal) * dir;
+        default:
+          return 0;
+      }
+    });
+    
+    return sorted;
+  }, [usuarios, orderBy, order]);
 
   const editar = (id) => nav(`/usuarios/editar/${id}`, { state: { from: location } });
   const pedirConfirmarEliminar = (u) => {
@@ -245,11 +288,43 @@ export default function Usuarios() {
       <Table>
         <TableHead>
           <TableRow>
-            <TableCell sx={{ fontWeight: 700 }}>Nombre</TableCell>
-            <TableCell sx={{ fontWeight: 700 }}>Email</TableCell>
-            <TableCell sx={{ fontWeight: 700 }}>DNI</TableCell>
+            <TableCell sx={{ fontWeight: 700 }} sortDirection={orderBy === "nombre" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "nombre"}
+                direction={orderBy === "nombre" ? order : "asc"}
+                onClick={() => handleSort("nombre")}
+              >
+                Nombre
+              </TableSortLabel>
+            </TableCell>
+            <TableCell sx={{ fontWeight: 700 }} sortDirection={orderBy === "email" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "email"}
+                direction={orderBy === "email" ? order : "asc"}
+                onClick={() => handleSort("email")}
+              >
+                Email
+              </TableSortLabel>
+            </TableCell>
+            <TableCell sx={{ fontWeight: 700 }} sortDirection={orderBy === "dni" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "dni"}
+                direction={orderBy === "dni" ? order : "asc"}
+                onClick={() => handleSort("dni")}
+              >
+                DNI
+              </TableSortLabel>
+            </TableCell>
             <TableCell sx={{ fontWeight: 700 }}>Roles</TableCell>
-            <TableCell sx={{ fontWeight: 700 }}>Estado</TableCell>
+            <TableCell sx={{ fontWeight: 700 }} sortDirection={orderBy === "activo" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "activo"}
+                direction={orderBy === "activo" ? order : "asc"}
+                onClick={() => handleSort("activo")}
+              >
+                Estado
+              </TableSortLabel>
+            </TableCell>
             <TableCell align="right" sx={{ fontWeight: 700 }}>Acciones</TableCell>
           </TableRow>
         </TableHead>

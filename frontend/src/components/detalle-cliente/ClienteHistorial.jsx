@@ -42,6 +42,7 @@ export default function ClienteHistorial({ clienteId }) {
   }
 
   return (
+    <Box sx={{ maxHeight: 400, overflowY: 'auto', overflowX: 'hidden' }}>
     <Stack spacing={2}>
       {historial.map((cambio) => (
         <Card key={cambio.id} variant="outlined">
@@ -97,6 +98,7 @@ export default function ClienteHistorial({ clienteId }) {
         </Card>
       ))}
     </Stack>
+    </Box>
   );
 }
 

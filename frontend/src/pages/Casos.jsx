@@ -1,6 +1,6 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { usePermisos } from "../auth/usePermissions";
 import api from "../api/axios";
 import {
@@ -25,7 +25,7 @@ import * as XLSX from "xlsx";
 /* ---------- helpers ---------- */
 function useDebounced(value, delay = 300) {
   const [debounced, setDebounced] = useState(value);
-  useMemo(() => {
+  useEffect(() => {
     const id = setTimeout(() => setDebounced(value), delay);
     return () => clearTimeout(id);
   }, [value, delay]);
@@ -52,28 +52,64 @@ const displayCliente = (c) => {
   return a || n || "Sin nombre";
 };
 
+const toInt = (v, def) => {
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) && n >= 0 ? n : def;
+};
+const toOrder = (v) => (v === "desc" ? "desc" : "asc");
+const toOrderBy = (v) => {
+  if (!v) return "nroExpte";
+  return ["nroExpte", "caratula", "cliente", "tipo", "estado"].includes(v) ? v : "nroExpte";
+};
+
 /* ---------- componente ---------- */
 export default function Casos() {
   const nav = useNavigate();
+  const location = useLocation();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
+  const [searchParams, setSearchParams] = useSearchParams();
   
   // Verificaciones de permisos
   const { canCrear, canEditar, canEliminar } = usePermisos('CASOS');
   
-  // Estado UI
-  const [page, setPage] = useState(0);
-  const [pageSize, setPageSize] = useState(10);
-  const [search, setSearch] = useState("");
+  // Estado inicial tomado de la URL
+  const [page, setPage] = useState(toInt(searchParams.get("page"), 0));
+  const [pageSize, setPageSize] = useState(toInt(searchParams.get("pageSize"), 10));
+  const [search, setSearch] = useState(searchParams.get("search") ?? "");
   const debouncedSearch = useDebounced(search, 300);
-
+  const [orderBy, setOrderBy] = useState(toOrderBy(searchParams.get("orderBy")));
+  const [order, setOrder] = useState(toOrder(searchParams.get("order")));
+  
   // Filtro por estado
-  const [estadoId, setEstadoId] = useState(""); // "" = todos
+  const [estadoId, setEstadoId] = useState(searchParams.get("estadoId") ?? ""); // "" = todos
   const { data: estados = [] } = useQuery({ queryKey: ["estados-caso"], queryFn: fetchEstadosCaso, staleTime: 5 * 60 * 1000 });
 
-  // Orden
-  const [orderBy, setOrderBy] = useState("nroExpte");
-  const [order, setOrder] = useState("asc");
+  // Mantener URL en sync
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (page) next.set("page", String(page));
+    if (pageSize !== 10) next.set("pageSize", String(pageSize));
+    if (debouncedSearch?.trim()) next.set("search", debouncedSearch.trim());
+    if (orderBy !== "nroExpte") next.set("orderBy", orderBy);
+    if (order !== "asc") next.set("order", order);
+    if (estadoId) next.set("estadoId", estadoId);
+
+    const changed = next.toString() !== searchParams.toString();
+    if (changed) setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, pageSize, debouncedSearch, orderBy, order, estadoId]);
+
+  // Si cambian externamente los searchParams, actualizamos el estado local
+  useEffect(() => {
+    setPage(toInt(searchParams.get("page"), 0));
+    setPageSize(toInt(searchParams.get("pageSize"), 10));
+    setSearch(searchParams.get("search") ?? "");
+    setOrderBy(toOrderBy(searchParams.get("orderBy")));
+    setOrder(toOrder(searchParams.get("order")));
+    setEstadoId(searchParams.get("estadoId") ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams.toString()]);
 
   const [deletingId, setDeletingId] = useState(null);
   const [confirm, setConfirm] = useState({ open: false, id: null, name: "" });
@@ -101,7 +137,7 @@ export default function Casos() {
   const total = data?.total ?? 0;
 
   const handleSort = (prop) => {
-    if (!["nroExpte", "caratula", "cliente"].includes(prop)) return;
+    if (!["nroExpte", "caratula", "cliente", "tipo", "estado"].includes(prop)) return;
     setPage(0);
     if (orderBy === prop) setOrder((prev) => (prev === "asc" ? "desc" : "asc"));
     else {
@@ -134,7 +170,6 @@ export default function Casos() {
         "Cliente": displayCliente(c.cliente),
         "Tipo": c.tipo?.nombre || "",
         "Estado": c.estado?.nombre || "",
-        "Fecha Estado": c.fechaEstado ? new Date(c.fechaEstado).toLocaleDateString() : "",
       }));
 
       const ws = XLSX.utils.json_to_sheet(datos);
@@ -153,8 +188,8 @@ export default function Casos() {
   };
 
   // Acciones
-  const verDetalle = (id) => nav(`/casos/${id}`);
-  const editar = (id) => nav(`/casos/editar/${id}`);
+  const verDetalle = (id) => nav(`/casos/${id}`, { state: { from: location } });
+  const editar = (id) => nav(`/casos/editar/${id}`, { state: { from: location } });
   const pedirConfirmarEliminar = (c) => {
     setConfirm({ open: true, id: c.id, name: c.nroExpte });
   };
@@ -444,9 +479,24 @@ export default function Casos() {
               </TableSortLabel>
             </TableCell>
 
-            <TableCell sx={{ width: 140 }}>Tipo</TableCell>
-            <TableCell sx={{ width: 120 }}>Estado</TableCell>
-            <TableCell sx={{ width: 110 }}>Fecha Estado</TableCell>
+            <TableCell sx={{ width: 140 }} sortDirection={orderBy === "tipo" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "tipo"}
+                direction={orderBy === "tipo" ? order : "asc"}
+                onClick={() => handleSort("tipo")}
+              >
+                Tipo
+              </TableSortLabel>
+            </TableCell>
+            <TableCell sx={{ width: 120 }} sortDirection={orderBy === "estado" ? order : false}>
+              <TableSortLabel
+                active={orderBy === "estado"}
+                direction={orderBy === "estado" ? order : "asc"}
+                onClick={() => handleSort("estado")}
+              >
+                Estado
+              </TableSortLabel>
+            </TableCell>
 
             <TableCell align="right" sx={{ width: 120, whiteSpace: "nowrap" }}>
               Acciones
@@ -468,7 +518,6 @@ export default function Casos() {
                   <TableCell><Skeleton width="60%" /></TableCell>
                   <TableCell><Skeleton width="90%" /></TableCell>
                   <TableCell><Skeleton width="80%" /></TableCell>
-                  <TableCell><Skeleton width="50%" /></TableCell>
                   <TableCell><Skeleton width="50%" /></TableCell>
                   <TableCell><Skeleton width="50%" /></TableCell>
                   <TableCell align="right"><Skeleton width="120px" /></TableCell>
@@ -516,10 +565,6 @@ export default function Casos() {
                     </Tooltip>
                   </TableCell>
 
-                  <TableCell sx={{ whiteSpace: "nowrap" }}>
-                    {c.fechaEstado ? new Date(c.fechaEstado).toLocaleDateString() : "-"}
-                  </TableCell>
-
                   <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
                     <Tooltip title="Detalle">
                       <IconButton size="small" onClick={() => verDetalle(c.id)}>
@@ -551,7 +596,7 @@ export default function Casos() {
 
           {!isFetching && rows.length === 0 && (
             <TableRow>
-              <TableCell colSpan={7}>
+              <TableCell colSpan={6}>
                 <Box sx={{ py: 6, textAlign: "center", opacity: 0.8 }}>
                   <Typography variant="body1" sx={{ mb: 1 }}>
                     No encontramos casos para mostrar.

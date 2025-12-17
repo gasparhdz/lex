@@ -15,6 +15,16 @@ function round2(n) {
   return Math.round(n * 100) / 100;
 }
 
+/** Helper para extraer mensajes de error de Zod de forma robusta */
+function getZodErrorMessages(zodError) {
+  if (!zodError) return "Error de validación";
+  const issues = zodError?.issues || zodError?.errors || [];
+  if (Array.isArray(issues) && issues.length > 0) {
+    return issues.map(e => e?.message || String(e)).join(", ");
+  }
+  return zodError?.message || "Error de validación";
+}
+
 /** Calcula total ARS del ingreso (preferimos snapshot): montoPesosEquivalente o (valorJusAlCobro * montoJusEquivalente) */
 function ingresoTotalARS(i) {
   return (
@@ -115,21 +125,31 @@ export async function listar(req, res, next) {
     if (!parsed.success) {
       return next({
         status: 400,
-        publicMessage: parsed.error.errors.map(e => e.message).join(", "),
+        publicMessage: getZodErrorMessages(parsed.error) || "Parámetros de consulta inválidos",
       });
     }
     const q = parsed.data;
 
     const page = Math.max(1, Number(q.page ?? 1));
-    const pageSize = Math.min(100, Math.max(1, Number(q.pageSize ?? 20)));
+    const pageSize = Math.min(500, Math.max(1, Number(q.pageSize ?? 20)));
     const skip = (page - 1) * pageSize;
     const take = pageSize;
+
+    const ingresoId = q.ingresoId != null ? Number(q.ingresoId) : undefined;
+    const gastoId   = q.gastoId   != null ? Number(q.gastoId)   : undefined;
+
+    // (opcional) compat si te llega ingreso_id / gasto_id desde algún lado
+    const ingresoIdAlt = req.query.ingreso_id != null ? Number(req.query.ingreso_id) : undefined;
+    const gastoIdAlt   = req.query.gasto_id   != null ? Number(req.query.gasto_id)   : undefined;
+
+    const finalIngresoId = Number.isFinite(ingresoId) ? ingresoId : (Number.isFinite(ingresoIdAlt) ? ingresoIdAlt : undefined);
+    const finalGastoId   = Number.isFinite(gastoId)   ? gastoId   : (Number.isFinite(gastoIdAlt)   ? gastoIdAlt   : undefined);
 
     const where = {
       deletedAt: null,
       activo: true,
-      ...(q.ingresoId ? { ingresoId: q.ingresoId } : {}),
-      ...(q.gastoId ? { gastoId: q.gastoId } : {}),
+      ...(Number.isFinite(finalIngresoId) ? { ingresoId: finalIngresoId } : {}),
+      ...(Number.isFinite(finalGastoId) ? { gastoId: finalGastoId } : {}),
     };
 
     const [total, data] = await Promise.all([
@@ -157,7 +177,7 @@ export async function listar(req, res, next) {
       }),
     ]);
 
-    res.json({ data, page, pageSize, total });
+    res.json({ rows: data, data, page, pageSize, total });
   } catch (e) {
     next(e);
   }
@@ -205,7 +225,7 @@ export async function crear(req, res, next) {
     if (!parsed.success) {
       return next({
         status: 400,
-        publicMessage: parsed.error.errors.map(e => e.message).join(", "),
+        publicMessage: getZodErrorMessages(parsed.error),
       });
     }
     const { ingresoId, gastoId, monto } = parsed.data;
@@ -309,7 +329,7 @@ export async function actualizar(req, res, next) {
     if (!parsed.success) {
       return next({
         status: 400,
-        publicMessage: parsed.error.errors.map(e => e.message).join(", "),
+        publicMessage: getZodErrorMessages(parsed.error),
       });
     }
     const { monto, fechaAplicacion } = parsed.data;

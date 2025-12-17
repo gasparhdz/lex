@@ -64,6 +64,7 @@ export default function CasoHistorial({ casoId }) {
   }
 
   return (
+    <Box sx={{ maxHeight: 400, overflowY: 'auto', overflowX: 'hidden' }}>
     <Stack spacing={2}>
       {historial.map((item) => (
         <Card key={item.id} variant="outlined">
@@ -103,6 +104,7 @@ export default function CasoHistorial({ casoId }) {
         </Card>
       ))}
     </Stack>
+    </Box>
   );
 }
 

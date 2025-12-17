@@ -8,9 +8,6 @@ import {
   Stack,
   Divider,
   Chip,
-  List,
-  ListItem,
-  ListItemText,
   IconButton,
   Tooltip,
   Switch,
@@ -30,6 +27,8 @@ import {
   OpenInNew,
   NotificationsActiveOutlined,
   Refresh,
+  ExpandMore,
+  ExpandLess,
 } from "@mui/icons-material";
 import CheckRoundedIcon from "@mui/icons-material/CheckRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
@@ -64,6 +63,32 @@ const Dashboard = () => {
 
   const [incluirVencidas, setIncluirVencidas] = useState(false);
   const [refreshingKey, setRefreshingKey] = useState(0);
+  const [tareasExpandidas, setTareasExpandidas] = useState(new Set());
+  const [eventosExpandidos, setEventosExpandidos] = useState(new Set());
+
+  const toggleTareaExpandida = (tareaId) => {
+    setTareasExpandidas(prev => {
+      const next = new Set(prev);
+      if (next.has(tareaId)) {
+        next.delete(tareaId);
+      } else {
+        next.add(tareaId);
+      }
+      return next;
+    });
+  };
+
+  const toggleEventoExpandido = (eventoId) => {
+    setEventosExpandidos(prev => {
+      const next = new Set(prev);
+      if (next.has(eventoId)) {
+        next.delete(eventoId);
+      } else {
+        next.add(eventoId);
+      }
+      return next;
+    });
+  };
 
   const enabled = !!localStorage.getItem("token");
 
@@ -116,6 +141,16 @@ const Dashboard = () => {
   // Toggle completada ↔ incompleta
   const toggleTarea = useMutation({
     mutationFn: (id) => api.post(`/tareas/${id}/toggle`).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["dashboard", "tareas"] });
+      qc.invalidateQueries({ queryKey: ["dashboard", "kpis"] });
+    },
+  });
+
+  // Toggle subtarea
+  const toggleSubtarea = useMutation({
+    mutationFn: ({ tareaId, subtareaId }) => 
+      api.post(`/tareas/${tareaId}/items/${subtareaId}/toggle`).then((r) => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["dashboard", "tareas"] });
       qc.invalidateQueries({ queryKey: ["dashboard", "kpis"] });
@@ -320,37 +355,42 @@ const Dashboard = () => {
                 </Stack>
                 <Divider/>
 
-                <List dense sx={{ flexGrow: 1 }}>
-                  {tareasOrdenadas.map((t, idx) => {
-                    const vencida = !t.completada && isOverdue(t.fechaVencimiento);
-                    const clienteTexto = displayCliente(t.cliente);
-                    const isToggling = toggleTarea.isPending && toggleTarea.variables === t.id;
-                    const fechaFmt = t.fechaVencimiento
-                      ? dayjs(t.fechaVencimiento).format("DD/MM/YYYY HH:mm")
-                      : "Sin fecha";
+                <Box sx={{ flexGrow: 1, overflowY: "auto", maxHeight: "calc(100vh - 350px)" }}>
+                  {tareasOrdenadas.length === 0 ? (
+                    <Typography
+                      variant="body2"
+                      color="text.secondary"
+                      px={2}
+                      py={1}
+                    >
+                      No hay tareas pendientes
+                    </Typography>
+                  ) : (
+                    <Stack spacing={0.75} sx={{ py: 1 }}>
+                      {tareasOrdenadas.map((t) => {
+                        const vencida = !t.completada && isOverdue(t.fechaVencimiento);
+                        const clienteTexto = displayCliente(t.cliente);
+                        const isToggling = toggleTarea.isPending && toggleTarea.variables === t.id;
+                        const fechaFmt = t.fechaVencimiento
+                          ? dayjs(t.fechaVencimiento).format("DD/MM HH:mm")
+                          : "Sin fecha";
 
-                    return (
-                      <React.Fragment key={t.id}>
-                        <ListItem
-                          alignItems="flex-start"
-                          sx={{
-                            "& .MuiListItemSecondaryAction-root": { right: 8 },
-                          }}
-                          secondaryAction={
-                            <Stack
-                              direction="row"
-                              spacing={1.2}
-                              alignItems="center"
-                              sx={{ width: 140, justifyContent: "flex-end" }}
-                            >
-                              {/* Botón toggle completada */}
-                              <Tooltip
-                                title={
-                                  t.completada
-                                    ? "Marcar como pendiente"
-                                    : "Marcar como completada"
-                                }
-                              >
+                        return (
+                          <Box
+                            key={t.id}
+                            sx={{
+                              p: 1,
+                              borderRadius: 1,
+                              bgcolor: vencida ? theme.palette.error.light : theme.palette.background.paper,
+                              border: `1px solid ${vencida ? theme.palette.error.main : theme.palette.divider}`,
+                              "&:hover": {
+                                boxShadow: theme.shadows[2],
+                              },
+                            }}
+                          >
+                            {/* Header: Checkbox, título, prioridad, fecha, expandir */}
+                            <Stack direction="row" alignItems="center" spacing={0.75}>
+                              <Tooltip title={t.completada ? "Marcar incompleta" : "Marcar completada"}>
                                 <span>
                                   <IconButton
                                     size="small"
@@ -361,8 +401,8 @@ const Dashboard = () => {
                                     {t.completada ? (
                                       <Box
                                         sx={{
-                                          width: 24,
-                                          height: 24,
+                                          width: 20,
+                                          height: 20,
                                           borderRadius: "50%",
                                           bgcolor: theme.palette.success.main,
                                           display: "grid",
@@ -370,115 +410,147 @@ const Dashboard = () => {
                                         }}
                                       >
                                         <CheckRoundedIcon
-                                          sx={{ color: "common.white" }}
-                                          fontSize="small"
+                                          sx={{ color: "common.white", fontSize: "14px" }}
                                         />
                                       </Box>
                                     ) : (
                                       <Box
                                         sx={{
-                                          width: 24,
-                                          height: 24,
+                                          width: 20,
+                                          height: 20,
                                           borderRadius: "50%",
-                                          bgcolor: theme.palette.error.main,
+                                          bgcolor: vencida ? theme.palette.error.main : theme.palette.action.disabledBackground,
                                           display: "grid",
                                           placeItems: "center",
                                         }}
                                       >
                                         <CloseRoundedIcon
-                                          sx={{ color: "common.white" }}
-                                          fontSize="small"
+                                          sx={{ color: "common.white", fontSize: "14px" }}
                                         />
                                       </Box>
                                     )}
                                   </IconButton>
                                 </span>
                               </Tooltip>
-
-                              {/* Ver detalle */}
-                              <Tooltip title="Ver detalle">
+                              <Typography
+                                variant="body2"
+                                fontWeight={500}
+                                sx={{
+                                  flexGrow: 1,
+                                  cursor: "pointer",
+                                  "&:hover": { color: theme.palette.primary.main },
+                                }}
+                                onClick={() => toggleTareaExpandida(t.id)}
+                              >
+                                {t.titulo}
+                              </Typography>
+                              {t.prioridad && (
+                                <Chip
+                                  label={t.prioridad.nombre}
+                                  size="small"
+                                  variant="outlined"
+                                  sx={{ height: 20, fontSize: "0.7rem" }}
+                                />
+                              )}
+                              <Typography variant="caption" color={vencida ? "error.main" : "text.secondary"}>
+                                {fechaFmt}
+                              </Typography>
+                              <Tooltip title={tareasExpandidas.has(t.id) ? "Ocultar" : "Mostrar detalles"}>
                                 <IconButton
                                   size="small"
-                                  onClick={() => navigate(`/tareas/${t.id}`)}
+                                  onClick={() => toggleTareaExpandida(t.id)}
+                                  sx={{ p: 0.25 }}
                                 >
-                                  <OpenInNew fontSize="small" />
+                                  {tareasExpandidas.has(t.id) ? (
+                                    <ExpandLess fontSize="small" />
+                                  ) : (
+                                    <ExpandMore fontSize="small" />
+                                  )}
                                 </IconButton>
                               </Tooltip>
                             </Stack>
-                          }
-                        >
-                          <ListItemText
-                            disableTypography
-                            primary={
-                              <Tooltip title={t.titulo} arrow>
-                                <Typography
-                                  variant="body1"
-                                  fontWeight={600}
-                                  noWrap
-                                  sx={{
-                                    overflow: "hidden",
-                                    textOverflow: "ellipsis",
-                                    display: "block",
-                                    cursor: "default",
-                                    pr: 10,
-                                  }}
-                                >
-                                  {t.titulo}
-                                </Typography>
-                              </Tooltip>
-                            }
-                            secondary={
-                              <Stack
-                                direction="row"
-                                alignItems="center"
-                                spacing={1}
-                                useFlexGap
-                                flexWrap="wrap"
-                              >
-                                {clienteTexto && (
-                                  <Chip
-                                    size="small"
-                                    variant="outlined"
-                                    label={clienteTexto}
-                                    sx={{
-                                      maxWidth: 260,
-                                      "& .MuiChip-label": {
-                                        overflow: "hidden",
-                                        textOverflow: "ellipsis",
-                                      },
-                                    }}
-                                  />
-                                )}
-                                <Chip
-                                  size="small"
-                                  label={fechaFmt}
-                                  color={vencida ? "error" : "default"}
-                                  variant={vencida ? "filled" : "outlined"}
-                                />
-                              </Stack>
-                            }
-                          />
-                        </ListItem>
 
-                        {/* Separador entre items */}
-                        {idx !== tareasOrdenadas.length - 1 && (
-                          <Divider component="li" sx={{ opacity: 0.4 }} />
-                        )}
-                      </React.Fragment>
-                    );
-                  })}
-
-                  {tareasOrdenadas.length === 0 && (
-                    <Typography
-                      variant="body2"
-                      color="text.secondary"
-                      px={2}
-                      py={0.5}
-                    >
-                      No hay tareas para mostrar con el filtro actual.
-                    </Typography>
+                            {/* Detalles expandidos: cliente, caso, descripción, recordatorio, subtareas */}
+                            {tareasExpandidas.has(t.id) && (
+                              <Box sx={{ ml: 4, mt: 0.5 }}>
+                                <Stack spacing={0.5}>
+                                  {clienteTexto && (
+                                    <Typography variant="caption" color="text.secondary">
+                                      👤 Cliente: {clienteTexto}
+                                    </Typography>
+                                  )}
+                                  {t.caso?.caratula && (
+                                    <Typography variant="caption" color="text.secondary">
+                                      ⚖️ Caso: {t.caso.caratula}
+                                    </Typography>
+                                  )}
+                                  {t.descripcion && (
+                                    <Typography variant="caption" color="text.secondary" sx={{ fontStyle: "italic" }}>
+                                      {t.descripcion}
+                                    </Typography>
+                                  )}
+                                  {t.recordatorio && (
+                                    <Typography variant="caption" color="warning.main">
+                                      🔔 Recordatorio: {dayjs(t.recordatorio).format("DD/MM HH:mm")}
+                                    </Typography>
+                                  )}
+                                  {t.items && t.items.length > 0 && (
+                                    <Box sx={{ mt: 0.5 }}>
+                                      <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
+                                        Subtareas:
+                                      </Typography>
+                                      <Stack spacing={0.5} divider={<Divider flexItem />}>
+                                        {t.items.map((sub) => {
+                                          const isSubtoggling = toggleSubtarea.isPending && 
+                                            toggleSubtarea.variables?.tareaId === t.id && 
+                                            toggleSubtarea.variables?.subtareaId === sub.id;
+                                          return (
+                                            <Stack
+                                              key={sub.id}
+                                              direction="row"
+                                              alignItems="center"
+                                              spacing={0.75}
+                                              sx={{ py: 0.25 }}
+                                            >
+                                              <Tooltip title={sub.completada ? "Marcar incompleta" : "Marcar completada"}>
+                                                <IconButton
+                                                  size="small"
+                                                  disabled={isSubtoggling}
+                                                  onClick={() => toggleSubtarea.mutate({ tareaId: t.id, subtareaId: sub.id })}
+                                                  sx={{ p: 0.25 }}
+                                                >
+                                                  {sub.completada ? (
+                                                    <CheckRoundedIcon sx={{ color: theme.palette.success.main, fontSize: "14px" }} />
+                                                  ) : (
+                                                    <CloseRoundedIcon sx={{ color: theme.palette.text.disabled, fontSize: "14px" }} />
+                                                  )}
+                                                </IconButton>
+                                              </Tooltip>
+                                              <Typography
+                                                variant="caption"
+                                                sx={{
+                                                  textDecoration: sub.completada ? "line-through" : "none",
+                                                  opacity: sub.completada ? 0.5 : 1,
+                                                  flexGrow: 1,
+                                                }}
+                                              >
+                                                {sub.titulo}
+                                              </Typography>
+                                            </Stack>
+                                          );
+                                        })}
+                                      </Stack>
+                                    </Box>
+                                  )}
+                                </Stack>
+                              </Box>
+                            )}
+                          </Box>
+                        );
+                      })}
+                    </Stack>
                   )}
-                </List>
+                </Box>
               </CardContent>
             </Card>
 
@@ -491,96 +563,119 @@ const Dashboard = () => {
                 </Typography>
                 <Divider/>
 
-                <List dense sx={{ flexGrow: 1 }}>
-                  {eventosOrdenados.map((ev, idx) => {
-                    const titulo = ev.titulo || "Evento";
-                    const fecha = dayjs(ev.fecha);
-                    const clienteNombre = ev?.cliente
-                      ? ev.cliente.razonSocial ||
-                        [ev.cliente.apellido, ev.cliente.nombre].filter(Boolean).join(", ")
-                      : null;
+                <Box sx={{ flexGrow: 1, overflowY: "auto", maxHeight: "calc(100vh - 350px)" }}>
+                  {eventosOrdenados.length === 0 ? (
+                    <Typography
+                      variant="body2"
+                      color="text.secondary"
+                      px={2}
+                      py={1}
+                    >
+                      No hay eventos pendientes
+                    </Typography>
+                  ) : (
+                    <Stack spacing={0.75} sx={{ py: 1 }}>
+                      {eventosOrdenados.map((ev) => {
+                        const titulo = ev.titulo || "Evento";
+                        const fecha = dayjs(ev.fecha);
+                        const clienteNombre = ev?.cliente
+                          ? ev.cliente.razonSocial ||
+                            [ev.cliente.apellido, ev.cliente.nombre].filter(Boolean).join(", ")
+                          : null;
+                        const vencido = isOverdue(ev.fecha);
+                        const fechaFmt = fecha.format("DD/MM HH:mm");
 
-                    const vencido = isOverdue(ev.fecha);
-
-                    return (
-                      <React.Fragment key={ev.id}>
-                        <ListItem
-                          sx={{ alignItems: "flex-start" }}
-                          secondaryAction={
-                            <Stack direction="row" spacing={1} alignItems="center">
-                              <Tooltip title="Ver evento">
+                        return (
+                          <Box
+                            key={ev.id}
+                            sx={{
+                              p: 1,
+                              borderRadius: 1,
+                              bgcolor: vencido ? theme.palette.error.light : theme.palette.background.paper,
+                              border: `1px solid ${vencido ? theme.palette.error.main : theme.palette.divider}`,
+                              "&:hover": {
+                                boxShadow: theme.shadows[2],
+                              },
+                            }}
+                          >
+                            {/* Header: Título, tipo, fecha, expandir */}
+                            <Stack direction="row" alignItems="center" spacing={0.75}>
+                              <Typography
+                                variant="body2"
+                                fontWeight={500}
+                                sx={{
+                                  flexGrow: 1,
+                                  cursor: "pointer",
+                                  "&:hover": { color: theme.palette.primary.main },
+                                }}
+                                onClick={() => toggleEventoExpandido(ev.id)}
+                              >
+                                {titulo}
+                              </Typography>
+                              {ev.tipo && (
+                                <Chip
+                                  label={ev.tipo.nombre}
+                                  size="small"
+                                  variant="outlined"
+                                  sx={{ height: 20, fontSize: "0.7rem" }}
+                                />
+                              )}
+                              <Typography variant="caption" color={vencido ? "error.main" : "text.secondary"}>
+                                {fechaFmt}
+                              </Typography>
+                              <Tooltip title={eventosExpandidos.has(ev.id) ? "Ocultar" : "Mostrar detalles"}>
                                 <IconButton
                                   size="small"
-                                  onClick={() => navigate(`/eventos/${ev.id}`)}
+                                  onClick={() => toggleEventoExpandido(ev.id)}
+                                  sx={{ p: 0.25 }}
                                 >
-                                  <OpenInNew fontSize="small" />
+                                  {eventosExpandidos.has(ev.id) ? (
+                                    <ExpandLess fontSize="small" />
+                                  ) : (
+                                    <ExpandMore fontSize="small" />
+                                  )}
                                 </IconButton>
                               </Tooltip>
                             </Stack>
-                          }
-                        >
-                          <ListItemText
-                            disableTypography
-                            primary={
-                              <Tooltip title={titulo} arrow>
-                                <Typography
-                                  variant="body1"
-                                  fontWeight={600}
-                                  noWrap
-                                  sx={{
-                                    maxWidth: { xs: "100%", sm: "calc(100% - 140px)" },
-                                  }}
-                                >
-                                  {titulo}
-                                </Typography>
-                              </Tooltip>
-                            }
-                            secondary={
-                              <Stack
-                                direction="row"
-                                alignItems="center"
-                                spacing={1}
-                                useFlexGap
-                                flexWrap="wrap"
-                              >
-                                {clienteNombre && (
-                                  <Chip
-                                    size="small"
-                                    variant="outlined"
-                                    label={clienteNombre}
-                                    sx={{
-                                      maxWidth: 260,
-                                      "& .MuiChip-label": {
-                                        overflow: "hidden",
-                                        textOverflow: "ellipsis",
-                                      },
-                                    }}
-                                  />
-                                )}
-                                <Chip
-                                  size="small"
-                                  label={fecha.format("DD/MM/YYYY HH:mm")}
-                                  color={vencido ? "error" : "default"}
-                                  variant={vencido ? "filled" : "outlined"}
-                                />
-                              </Stack>
-                            }
-                          />
-                        </ListItem>
 
-                        {idx < eventosOrdenados.length - 1 && (
-                          <Divider component="li" sx={{ opacity: 0.4 }} />
-                        )}
-                      </React.Fragment>
-                    );
-                  })}
-
-                  {eventosOrdenados.length === 0 && (
-                    <Typography variant="body2" color="text.secondary" px={2} py={0.5}>
-                      No hay eventos pendientes.
-                    </Typography>
+                            {/* Detalles expandidos */}
+                            {eventosExpandidos.has(ev.id) && (
+                              <Box sx={{ ml: 0, mt: 0.5 }}>
+                                <Stack spacing={0.5}>
+                                  {clienteNombre && (
+                                    <Typography variant="caption" color="text.secondary">
+                                      👤 Cliente: {clienteNombre}
+                                    </Typography>
+                                  )}
+                                  {ev.caso?.caratula && (
+                                    <Typography variant="caption" color="text.secondary">
+                                      ⚖️ Caso: {ev.caso.caratula}
+                                    </Typography>
+                                  )}
+                                  {ev.observaciones && (
+                                    <Typography variant="caption" color="text.secondary" sx={{ fontStyle: "italic" }}>
+                                      {ev.observaciones}
+                                    </Typography>
+                                  )}
+                                  {ev.ubicacion && (
+                                    <Typography variant="caption" color="text.secondary">
+                                      📍 Ubicación: {ev.ubicacion}
+                                    </Typography>
+                                  )}
+                                  {ev.recordatorio && (
+                                    <Typography variant="caption" color="warning.main">
+                                      🔔 Recordatorio: {dayjs(ev.recordatorio).format("DD/MM HH:mm")}
+                                    </Typography>
+                                  )}
+                                </Stack>
+                              </Box>
+                            )}
+                          </Box>
+                        );
+                      })}
+                    </Stack>
                   )}
-                </List>
+                </Box>
               </CardContent>
             </Card>
           </Box>

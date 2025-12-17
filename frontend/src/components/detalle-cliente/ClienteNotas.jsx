@@ -1,5 +1,5 @@
 // src/components/detalle-cliente/ClienteNotas.jsx
-import { useState } from "react";
+import { useState, forwardRef, useImperativeHandle } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Box,
@@ -12,24 +12,26 @@ import {
   Card,
   CardContent,
   Stack,
-  Divider,
   Alert,
   CircularProgress,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
 } from "@mui/material";
 import { enqueueSnackbar } from "notistack";
 import AddIcon from "@mui/icons-material/Add";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
-import SaveIcon from "@mui/icons-material/Save";
-import CloseIcon from "@mui/icons-material/Close";
-import NotesIcon from "@mui/icons-material/Notes";
 import api from "../../api/axios";
 import ConfirmDialog from "../ConfirmDialog";
 import dayjs from "dayjs";
 
-export default function ClienteNotas({ clienteId }) {
+const ClienteNotas = forwardRef(function ClienteNotas({ clienteId }, ref) {
   const qc = useQueryClient();
+  const [openDialogNueva, setOpenDialogNueva] = useState(false);
   const [nuevaNota, setNuevaNota] = useState("");
+  const [openDialogEditar, setOpenDialogEditar] = useState(false);
   const [editandoId, setEditandoId] = useState(null);
   const [editandoContenido, setEditandoContenido] = useState("");
   const [confirm, setConfirm] = useState({ open: false, id: null, contenido: "" });
@@ -48,6 +50,7 @@ export default function ClienteNotas({ clienteId }) {
     onSuccess: () => {
       enqueueSnackbar("Nota agregada", { variant: "success" });
       setNuevaNota("");
+      setOpenDialogNueva(false);
       qc.invalidateQueries({ queryKey: ["cliente-notas", clienteId] });
       refetch();
     },
@@ -64,6 +67,7 @@ export default function ClienteNotas({ clienteId }) {
       enqueueSnackbar("Nota actualizada", { variant: "success" });
       setEditandoId(null);
       setEditandoContenido("");
+      setOpenDialogEditar(false);
       qc.invalidateQueries({ queryKey: ["cliente-notas", clienteId] });
       refetch();
     },
@@ -87,6 +91,20 @@ export default function ClienteNotas({ clienteId }) {
     },
   });
 
+  const handleAbrirDialogNueva = () => {
+    setOpenDialogNueva(true);
+  };
+
+  const handleCerrarDialogNueva = () => {
+    setOpenDialogNueva(false);
+    setNuevaNota("");
+  };
+
+  // Exponer función para abrir dialog desde el padre
+  useImperativeHandle(ref, () => ({
+    abrirDialogNueva: handleAbrirDialogNueva,
+  }));
+
   const handleAgregar = () => {
     if (!nuevaNota.trim()) {
       enqueueSnackbar("La nota no puede estar vacía", { variant: "warning" });
@@ -98,6 +116,13 @@ export default function ClienteNotas({ clienteId }) {
   const handleEditar = (nota) => {
     setEditandoId(nota.id);
     setEditandoContenido(nota.contenido);
+    setOpenDialogEditar(true);
+  };
+
+  const handleCerrarDialogEditar = () => {
+    setOpenDialogEditar(false);
+    setEditandoId(null);
+    setEditandoContenido("");
   };
 
   const handleGuardarEdicion = () => {
@@ -106,11 +131,6 @@ export default function ClienteNotas({ clienteId }) {
       return;
     }
     actualizarMut.mutate({ notaId: editandoId, contenido: editandoContenido.trim() });
-  };
-
-  const handleCancelarEdicion = () => {
-    setEditandoId(null);
-    setEditandoContenido("");
   };
 
   const handleConfirmEliminar = () => {
@@ -131,97 +151,103 @@ export default function ClienteNotas({ clienteId }) {
 
   return (
     <Box>
-      {/* Agregar nueva nota */}
-      <Card variant="outlined" sx={{ mb: 3, bgcolor: "action.hover" }}>
-        <CardContent>
-          <Box sx={{ display: "flex", gap: 2, alignItems: "flex-start" }}>
-            <NotesIcon sx={{ mt: 1, color: "primary.main" }} />
-            <Box sx={{ flex: 1 }}>
-              <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>
-                Nueva nota
-              </Typography>
-              <TextField
-                multiline
-                minRows={2}
-                fullWidth
-                size="small"
-                placeholder="Escribe una nota sobre este cliente..."
-                value={nuevaNota}
-                onChange={(e) => setNuevaNota(e.target.value)}
-              />
-              <Box sx={{ mt: 2, display: "flex", gap: 1, justifyContent: "flex-end" }}>
-                <Button variant="outlined" size="small" onClick={() => setNuevaNota("")} disabled={crearMut.isLoading}>
-                  Cancelar
-                </Button>
-                <Button variant="contained" size="small" onClick={handleAgregar} disabled={crearMut.isLoading}>
-                  {crearMut.isLoading ? "Guardando..." : "Agregar"}
-                </Button>
-              </Box>
-            </Box>
-          </Box>
-        </CardContent>
-      </Card>
-
       {/* Lista de notas */}
       {notas.length === 0 ? (
         <Alert severity="info">
-          Aún no hay notas registradas para este cliente. Agrega una usando el formulario de arriba.
+          Aún no hay notas registradas para este cliente.
         </Alert>
       ) : (
-        <Stack spacing={2}>
+        <Box sx={{ maxHeight: 400, overflowY: 'auto', overflowX: 'hidden' }}>
+        <Stack spacing={1.5}>
           {notas.map((nota) => (
             <Card key={nota.id} variant="outlined">
-              <CardContent>
-                {editandoId === nota.id ? (
-                  <>
-                    <TextField
-                      multiline
-                      minRows={2}
-                      fullWidth
-                      value={editandoContenido}
-                      onChange={(e) => setEditandoContenido(e.target.value)}
-                    />
-                    <Box sx={{ mt: 2, display: "flex", gap: 1, justifyContent: "flex-end" }}>
-                      <IconButton size="small" onClick={handleCancelarEdicion}>
-                        <CloseIcon />
+              <CardContent sx={{ py: 1.5, px: 2, '&:last-child': { pb: 1.5 } }}>
+                <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: '0.875rem' }}>
+                  {nota.contenido}
+                </Typography>
+                <Box sx={{ mt: 1, display: "flex", alignItems: "center", gap: 1, justifyContent: "space-between" }}>
+                  <Chip label={formatearFecha(nota.createdAt)} size="small" variant="outlined" sx={{ height: 20, fontSize: '0.7rem' }} />
+                  <Box>
+                    <Tooltip title="Editar">
+                      <IconButton size="small" onClick={() => handleEditar(nota)} disabled={actualizarMut.isLoading}>
+                        <EditIcon fontSize="small" />
                       </IconButton>
-                      <IconButton size="small" color="primary" onClick={handleGuardarEdicion} disabled={actualizarMut.isLoading}>
-                        <SaveIcon />
+                    </Tooltip>
+                    <Tooltip title="Eliminar">
+                      <IconButton
+                        size="small"
+                        color="error"
+                        onClick={() => setConfirm({ open: true, id: nota.id, contenido: nota.contenido })}
+                        disabled={eliminarMut.isLoading}
+                      >
+                        <DeleteIcon fontSize="small" />
                       </IconButton>
-                    </Box>
-                  </>
-                ) : (
-                  <>
-                    <Typography variant="body1" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                      {nota.contenido}
-                    </Typography>
-                    <Box sx={{ mt: 1.5, display: "flex", alignItems: "center", gap: 1, justifyContent: "space-between" }}>
-                      <Chip label={formatearFecha(nota.createdAt)} size="small" variant="outlined" />
-                      <Box>
-                        <Tooltip title="Editar">
-                          <IconButton size="small" onClick={() => handleEditar(nota)} disabled={actualizarMut.isLoading}>
-                            <EditIcon fontSize="small" />
-                          </IconButton>
-                        </Tooltip>
-                        <Tooltip title="Eliminar">
-                          <IconButton
-                            size="small"
-                            color="error"
-                            onClick={() => setConfirm({ open: true, id: nota.id, contenido: nota.contenido })}
-                            disabled={eliminarMut.isLoading}
-                          >
-                            <DeleteIcon fontSize="small" />
-                          </IconButton>
-                        </Tooltip>
-                      </Box>
-                    </Box>
-                  </>
-                )}
+                    </Tooltip>
+                  </Box>
+                </Box>
               </CardContent>
             </Card>
           ))}
         </Stack>
+        </Box>
       )}
+
+      {/* Dialog para nueva nota */}
+      <Dialog open={openDialogNueva} onClose={handleCerrarDialogNueva} maxWidth="sm" fullWidth>
+        <DialogTitle>Nueva nota</DialogTitle>
+        <DialogContent>
+          <TextField
+            multiline
+            minRows={4}
+            fullWidth
+            placeholder="Escribe una nota sobre este cliente..."
+            value={nuevaNota}
+            onChange={(e) => setNuevaNota(e.target.value)}
+            sx={{ mt: 1 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCerrarDialogNueva} disabled={crearMut.isLoading}>
+            Cancelar
+          </Button>
+          <Button
+            variant="contained"
+            onClick={handleAgregar}
+            disabled={crearMut.isLoading}
+            startIcon={crearMut.isLoading ? <CircularProgress size={16} /> : null}
+          >
+            {crearMut.isLoading ? "Guardando..." : "Agregar"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Dialog para editar nota */}
+      <Dialog open={openDialogEditar} onClose={handleCerrarDialogEditar} maxWidth="sm" fullWidth>
+        <DialogTitle>Editar nota</DialogTitle>
+        <DialogContent>
+          <TextField
+            multiline
+            minRows={4}
+            fullWidth
+            value={editandoContenido}
+            onChange={(e) => setEditandoContenido(e.target.value)}
+            sx={{ mt: 1 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCerrarDialogEditar} disabled={actualizarMut.isLoading}>
+            Cancelar
+          </Button>
+          <Button
+            variant="contained"
+            onClick={handleGuardarEdicion}
+            disabled={actualizarMut.isLoading}
+            startIcon={actualizarMut.isLoading ? <CircularProgress size={16} /> : null}
+          >
+            {actualizarMut.isLoading ? "Guardando..." : "Guardar"}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <ConfirmDialog
         open={confirm.open}
@@ -236,5 +262,7 @@ export default function ClienteNotas({ clienteId }) {
       />
     </Box>
   );
-}
+});
+
+export default ClienteNotas;
 

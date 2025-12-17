@@ -14,6 +14,10 @@ const MAX_RECONNECT_ATTEMPTS = 5;
 let currentQR = null; // QR code actual para mostrar en el frontend
 let linkedPhoneNumber = null; // Número vinculado (el que escaneó el QR)
 
+// Feature flag: deshabilitar WhatsApp por defecto.
+// Para habilitarlo explícitamente, setear WHATSAPP_DISABLED=false en el entorno.
+const WHATSAPP_DISABLED = process.env.WHATSAPP_DISABLED !== 'false';
+
 // Sesión fuera del repo (según plataforma)
 const SESSION_PATH = process.platform === 'win32' 
   ? 'C:/lex-wa-session'
@@ -36,7 +40,7 @@ export function initializeWhatsApp() {
   }
 
   // Verificar si WhatsApp Web está disponible (solo intentar en producción o si está habilitado)
-  if (process.env.WHATSAPP_DISABLED === 'true') {
+  if (WHATSAPP_DISABLED) {
     console.log('ℹ️ WhatsApp deshabilitado por configuración');
     return null;
   }
@@ -229,6 +233,12 @@ function attemptReconnect() {
  * @returns {Promise<Object>} Resultado del envío
  */
 export async function sendWhatsApp(to, message) {
+  if (WHATSAPP_DISABLED) {
+    return {
+      success: false,
+      error: 'WhatsApp está deshabilitado por configuración',
+    };
+  }
   try {
     // Usar getWaClient() para obtener el singleton
     const client = getWaClient();

@@ -174,23 +174,33 @@ export async function listarTareasPendientes(req, res, next) {
       where,
       orderBy: [{ fechaLimite: "asc" }],
       take: 50,
-      select: {
-        id: true,
-        titulo: true,
-        fechaLimite: true,
-        // 👇 agregado: cliente para mostrar chip
+      include: {
         cliente: { select: { id: true, apellido: true, nombre: true, razonSocial: true } },
-        // opcional: por si querés también usar carátula como fallback
         caso: { select: { id: true, caratula: true } },
+        prioridad: { select: { id: true, nombre: true, orden: true } },
+        items: {
+          where: { deletedAt: null, activo: true },
+          orderBy: [{ orden: "asc" }, { id: "asc" }],
+          select: {
+            id: true,
+            titulo: true,
+            completada: true,
+            orden: true,
+          },
+        },
       },
     });
 
     const respuesta = tareas.map(t => ({
       id: t.id,
       titulo: t.titulo,
-      fechaVencimiento: t.fechaLimite, // lo que espera el front
-      cliente: t.cliente,              // 👈 ahora llega al front
+      descripcion: t.descripcion,
+      fechaVencimiento: t.fechaLimite,
+      recordatorio: t.recordatorio,
+      cliente: t.cliente,
       caso: t.caso,
+      prioridad: t.prioridad,
+      items: t.items,
     }));
 
     // ordenar dejando "sin fecha" al final
@@ -240,7 +250,11 @@ export async function listarEventosPendientes(_req, res, next) {
       select: {
         id: true,
         descripcion: true,
+        observaciones: true,
         fechaInicio: true,
+        recordatorio: true,
+        ubicacion: true,
+        caso: { select: { id: true, caratula: true } },
         tipo: { select: { nombre: true } },
         cliente: { select: { id: true, apellido: true, nombre: true, razonSocial: true } },
       },
@@ -249,8 +263,14 @@ export async function listarEventosPendientes(_req, res, next) {
     res.json(eventos.map(ev => ({
       id: ev.id,
       titulo: ev.descripcion || ev.tipo?.nombre || "Evento",
+      descripcion: ev.descripcion,
+      observaciones: ev.observaciones,
       fecha: ev.fechaInicio,
+      recordatorio: ev.recordatorio,
+      ubicacion: ev.ubicacion,
+      tipo: ev.tipo,
       cliente: ev.cliente,
+      caso: ev.caso,
     })));
   } catch (e) { next(e); }
 }

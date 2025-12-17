@@ -35,6 +35,14 @@ const eventoBase = z
         path: ["fechaFin"],
       });
     }
+    // recordatorio no puede ser posterior a fechaInicio (si viene)
+    if (val.recordatorio && val.recordatorio > val.fechaInicio) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "recordatorio no puede ser posterior a fechaInicio",
+        path: ["recordatorio"],
+      });
+    }
   });
 
 // Crear requiere los obligatorios (tipoId, fechaInicio)

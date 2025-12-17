@@ -9,14 +9,25 @@ const BASE = "/finanzas/aplicaciones/gastos";
 /* ========================= Helpers ========================= */
 function normListResp(resp, defaults) {
   const data = resp?.data ?? resp ?? {};
-  const rows = Array.isArray(data?.data) ? data.data : [];
-  const total = typeof data?.total === "number" ? data.total : rows.length;
+
+  // Priorizar `rows` (paginado clásico). Fallback a `data`.
+  const rows =
+    Array.isArray(data?.rows) ? data.rows
+    : Array.isArray(data?.data) ? data.data
+    : Array.isArray(data?.items) ? data.items
+    : [];
+
+  const total =
+    typeof data?.total === "number" ? data.total
+    : typeof data?.count === "number" ? data.count
+    : rows.length;
 
   return {
     rows,
     total: Number(total ?? 0),
     page: Number(data?.page ?? defaults.page),
     pageSize: Number(data?.pageSize ?? defaults.pageSize),
+    raw: data, // útil para debug si querés
   };
 }
 
@@ -31,14 +42,17 @@ export async function listAplicacionesIngresoGasto(params = {}) {
   const rawPage     = Number(params.page ?? 1);
   const rawPageSize = Number(params.pageSize ?? 20);
 
-  const page     = Number.isFinite(rawPage) && rawPage > 0 ? rawPage : 1;     // 1-based
-  const pageSize = Math.min(100, Number.isFinite(rawPageSize) ? rawPageSize : 20);
+  const page     = Number.isFinite(rawPage) && rawPage > 0 ? rawPage : 1; // 1-based
+  const pageSize = Math.min(
+    500,
+    Number.isFinite(rawPageSize) && rawPageSize > 0 ? rawPageSize : 20
+  );
 
   const q = {
     page,
     pageSize,
-    ingresoId: params.ingresoId || undefined,
-    gastoId: params.gastoId || undefined,
+    ingresoId: params.ingresoId ? Number(params.ingresoId) : undefined,
+    gastoId: params.gastoId ? Number(params.gastoId) : undefined,
   };
 
   const resp = await api.get(`${BASE}`, { params: q });
@@ -62,9 +76,6 @@ export async function crearAplicacionIngresoGasto(payload) {
 }
 
 /* ========================= (Opcional) Actualizar aplicación ========================= */
-/**
- * payload parcial: { monto?: number, fechaAplicacion?: DateISO }
- */
 export async function actualizarAplicacionIngresoGasto(id, payload) {
   const { data } = await api.put(`${BASE}/${id}`, payload);
   return data ?? null;

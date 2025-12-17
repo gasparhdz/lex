@@ -119,6 +119,12 @@ function buildOrderBy({ orderBy, order, sort }) {
       case "updatedAt":
       case "completada":
         return [{ [orderBy]: dir }];
+      case "titulo":
+        return [{ titulo: dir }];
+      case "cliente":
+        return [{ cliente: { apellido: dir } }];
+      case "prioridad":
+        return [{ prioridad: { nombre: dir } }];
       default:
         return [{ createdAt: "desc" }];
     }
@@ -127,13 +133,19 @@ function buildOrderBy({ orderBy, order, sort }) {
   // sort múltiple: field:dir,field2:dir2
   if (sort) {
     const parts = String(sort).split(",").map((x) => x.trim()).filter(Boolean);
-    const allow = new Set(["fechaLimite", "createdAt", "updatedAt", "completada"]);
+    const allow = new Set(["fechaLimite", "createdAt", "updatedAt", "completada", "titulo", "cliente", "prioridad"]);
     const orderByArr = [];
     for (const p of parts) {
       const [field, dirRaw] = p.split(":");
       if (!field || !allow.has(field)) continue;
       const dir = (dirRaw || "asc").toLowerCase() === "desc" ? "desc" : "asc";
-      orderByArr.push({ [field]: dir });
+      if (field === "cliente") {
+        orderByArr.push({ cliente: { apellido: dir } });
+      } else if (field === "prioridad") {
+        orderByArr.push({ prioridad: { nombre: dir } });
+      } else {
+        orderByArr.push({ [field]: dir });
+      }
     }
     if (orderByArr.length) return orderByArr;
   }
@@ -162,7 +174,7 @@ export async function listar(req, res, next) {
         include: {
           cliente:   { select: { id: true, apellido: true, nombre: true, razonSocial: true } },
           caso:      { select: { id: true, nroExpte: true, caratula: true } },
-          prioridad: { select: { id: true, nombre: true, codigo: true } },
+          prioridad: { select: { id: true, nombre: true, codigo: true, orden: true } },
         },
       }),
     ]);

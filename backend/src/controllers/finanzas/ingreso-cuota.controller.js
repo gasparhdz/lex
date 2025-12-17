@@ -7,7 +7,13 @@ import {
 } from "../../validators/finanzas/ingreso-cuota.schema.js";
 
 // 👇 NUEVO: import del recompute del honorario (exportalo en honorario.controller)
-import { recomputeHonorarioEstadoSaldo } from "./honorario.controller.js";
+let recomputeHonorarioEstadoSaldo = null;
+try {
+  const mod = await import("./honorario.controller.js");
+  recomputeHonorarioEstadoSaldo = mod?.recomputeHonorarioEstadoSaldo ?? null;
+} catch {
+  recomputeHonorarioEstadoSaldo = null;
+}
 
 /* ========================= Helpers ========================= */
 function toNum(x, d = 0) {
@@ -17,6 +23,19 @@ function toNum(x, d = 0) {
 }
 function round2(n) {
   return Math.round(toNum(n, 0) * 100) / 100;
+}
+function round6(n) {
+  return Math.round(toNum(n, 0) * 1000000) / 1000000;
+}
+
+/** Helper para extraer mensajes de error de Zod de forma robusta */
+function getZodErrorMessages(zodError) {
+  if (!zodError) return "Error de validación";
+  const issues = zodError?.issues || zodError?.errors || [];
+  if (Array.isArray(issues) && issues.length > 0) {
+    return issues.map(e => e?.message || String(e)).join(", ");
+  }
+  return zodError?.message || "Error de validación";
 }
 
 /** Total ARS del ingreso (preferimos snapshot guardado) */
@@ -56,10 +75,13 @@ async function sumAplicadoEnCuota(cuotaId) {
 async function findValorJusSnapshot(fecha) {
   const d = fecha instanceof Date ? fecha : new Date(fecha);
   let row = await prisma.valorJUS.findFirst({
-    where: { fecha: { lte: d } },
+    where: { deletedAt: null, activo: true, fecha: { lte: d } },
     orderBy: { fecha: "desc" },
   });
-  if (!row) row = await prisma.valorJUS.findFirst({ orderBy: { fecha: "desc" } });
+  if (!row) row = await prisma.valorJUS.findFirst({
+    where: { deletedAt: null, activo: true },
+    orderBy: { fecha: "desc" },
+  });
   return row?.valor ?? null;
 }
 
@@ -249,13 +271,13 @@ export async function listar(req, res, next) {
     if (!parsed.success) {
       return next({
         status: 400,
-        publicMessage: parsed.error.errors.map(e => e.message).join(", "),
+        publicMessage: getZodErrorMessages(parsed.error) || "Parámetros de consulta inválidos",
       });
     }
     const q = parsed.data;
 
     const page = Math.max(1, Number(q.page ?? 1));
-    const pageSize = Math.min(100, Math.max(1, Number(q.pageSize ?? 20)));
+    const pageSize = Math.min(500, Math.max(1, Number(q.pageSize ?? 20)));
     const skip = (page - 1) * pageSize;
     const take = pageSize;
 
@@ -360,7 +382,7 @@ export async function crear(req, res, next) {
   try {
     const parsed = crearAplicacionCuotaSchema.safeParse(req.body);
     if (!parsed.success) {
-      return next({ status: 400, publicMessage: parsed.error.errors.map(e => e.message).join(", ") });
+      return next({ status: 400, publicMessage: getZodErrorMessages(parsed.error) });
     }
     const { ingresoId, cuotaId, monto } = parsed.data;
     const createdBy = req.user?.id ?? null;
@@ -385,58 +407,103 @@ export async function crear(req, res, next) {
       );
       const ingresoSaldoARS = round2(ingresoTotal - ingresoAplicado);
 
-      // Fecha y snapshot JUS
-      const fechaAplicacion = ingreso.fechaIngreso ?? new Date();
-      const vj = toNum(ingreso.valorJusAlCobro) || (await findValorJusSnapshot(fechaAplicacion));
+              // Fecha y snapshot JUS
+        const fechaAplicacion = ingreso.fechaIngreso ?? new Date();
+        const vjIngreso = toNum(ingreso.valorJusAlCobro) || (await findValorJusSnapshot(fechaAplicacion));
 
-      // Cuota
-      const cuota = await tx.planCuota.findFirst({
-        where: { id: Number(cuotaId), deletedAt: null, activo: true },
-        select: { id: true, montoJus: true, montoPesos: true, valorJusRef: true, vencimiento: true, planId: true },
-      });
-      if (!cuota) throw { status: 404, publicMessage: "Cuota no encontrada" };
+        // Cuota con plan (para obtener política JUS)
+        const cuota = await tx.planCuota.findFirst({
+          where: { id: Number(cuotaId), deletedAt: null, activo: true },
+          select: { 
+            id: true, 
+            montoJus: true, 
+            montoPesos: true, 
+            valorJusRef: true, 
+            vencimiento: true, 
+            planId: true,
+            plan: {
+              select: {
+                politicaJusId: true,
+              },
+            },
+          },
+        });
+        if (!cuota) throw { status: 404, publicMessage: "Cuota no encontrada" };
 
-      let maxCuotaAplicableARS;
-      if (esCuotaJUS(cuota)) {
-        const totalJUS = toNum(cuota.montoJus);
-        const aplicadoJUS = toNum(
-          (await tx.ingresoCuota.aggregate({
-            _sum: { montoAplicadoJUS: true },
-            where: { cuotaId: Number(cuotaId), deletedAt: null, activo: true },
-          }))._sum.montoAplicadoJUS
-        );
-        const saldoJUS = round2(totalJUS - aplicadoJUS);
-        if (!(vj > 0)) {
-          throw { status: 400, publicMessage: "No se pudo obtener el valor JUS para la fecha de aplicación" };
+        // Determinar el valor JUS a usar para los cálculos:
+        // - Si la cuota ya tiene valorJusRef, usarlo (para cuotas ya pagadas parcialmente)
+        // - Si no tiene valorJusRef y es política AL_COBRO, usar el valor JUS del ingreso y asignarlo a la cuota
+        // - Si no tiene valorJusRef y es política FECHA_REGULACION, usar el valor JUS del ingreso (pero no asignarlo, debería estar ya asignado)
+        let vjParaCalculos = toNum(cuota.valorJusRef);
+        const poli = Number(cuota.plan?.politicaJusId || 168); // default: FECHA_REGULACION
+        const esALCobro = poli === 169;
+
+        if (esCuotaJUS(cuota)) {
+          if (!vjParaCalculos && esALCobro && vjIngreso > 0) {
+            // Política AL_COBRO: asignar valorJusRef de la cuota con el valor JUS del ingreso
+            await tx.planCuota.update({
+              where: { id: Number(cuotaId) },
+              data: { valorJusRef: vjIngreso },
+            });
+            vjParaCalculos = vjIngreso;
+          } else if (!vjParaCalculos) {
+            // Si no tiene valorJusRef y no es AL_COBRO, usar el valor JUS del ingreso para cálculos
+            vjParaCalculos = vjIngreso;
+          }
+          // Si ya tiene valorJusRef, lo usamos (no lo cambiamos)
         }
-        maxCuotaAplicableARS = round2(Math.max(0, saldoJUS) * vj);
-      } else {
-        const totalARS = cuotaTotalARS(cuota);
-        const aplicadoARS = toNum(
-          (await tx.ingresoCuota.aggregate({
-            _sum: { montoAplicadoARS: true },
-            where: { cuotaId: Number(cuotaId), deletedAt: null, activo: true },
-          }))._sum.montoAplicadoARS
-        );
-        maxCuotaAplicableARS = round2(totalARS - aplicadoARS);
-      }
+
+        let maxCuotaAplicableARS;
+        if (esCuotaJUS(cuota)) {
+          const totalJUS = toNum(cuota.montoJus);
+          const aplicadoJUS = toNum(
+            (await tx.ingresoCuota.aggregate({
+              _sum: { montoAplicadoJUS: true },
+              where: { cuotaId: Number(cuotaId), deletedAt: null, activo: true },
+            }))._sum.montoAplicadoJUS
+          );
+          // ✅ NO redondear saldoJUS aquí - mantener precisión hasta multiplicar por vj
+          const saldoJUS = totalJUS - aplicadoJUS;
+          if (!(vjParaCalculos > 0)) {
+            throw { status: 400, publicMessage: "No se pudo obtener el valor JUS para la fecha de aplicación" };
+          }
+          // ✅ Redondear solo al final, después de multiplicar
+          maxCuotaAplicableARS = round2(Math.max(0, saldoJUS) * vjParaCalculos);
+        } else {
+          const totalARS = cuotaTotalARS(cuota);
+          const aplicadoARS = toNum(
+            (await tx.ingresoCuota.aggregate({
+              _sum: { montoAplicadoARS: true },
+              where: { cuotaId: Number(cuotaId), deletedAt: null, activo: true },
+            }))._sum.montoAplicadoARS
+          );
+          maxCuotaAplicableARS = round2(totalARS - aplicadoARS);
+        }
 
       const maxAplicable = Math.max(0, Math.min(ingresoSaldoARS, maxCuotaAplicableARS));
       if (toNum(monto) > maxAplicable) {
         throw { status: 400, publicMessage: `Monto supera el disponible. Máximo aplicable ARS ${maxAplicable.toFixed(2)}` };
       }
 
-      const app = await tx.ingresoCuota.create({
-        data: {
-          ingresoId: Number(ingresoId),
-          cuotaId: Number(cuotaId),
-          fechaAplicacion,
-          montoAplicadoARS: round2(monto),
-          valorJusAlAplic: vj || null,
-          montoAplicadoJUS: vj ? round2(toNum(monto) / vj) : null,
-          createdBy,
-        },
-      });
+              // Usar vjParaCalculos si es cuota JUS, sino usar vjIngreso
+        const vjParaAplic = esCuotaJUS(cuota) && vjParaCalculos > 0 ? vjParaCalculos : vjIngreso;
+
+        // ✅ Calcular montoAplicadoJUS ANTES de redondear montoAplicadoARS para mantener precisión
+        const montoNum = toNum(monto);
+        const montoAplicadoARSFinal = round2(montoNum);
+        const montoAplicadoJUSFinal = vjParaAplic ? round6(montoNum / vjParaAplic) : null;
+
+        const app = await tx.ingresoCuota.create({
+          data: {
+            ingresoId: Number(ingresoId),
+            cuotaId: Number(cuotaId),
+            fechaAplicacion,
+            montoAplicadoARS: montoAplicadoARSFinal,
+            valorJusAlAplic: vjParaAplic || null,
+            montoAplicadoJUS: montoAplicadoJUSFinal,
+            createdBy,
+          },
+        });
 
       await recalcularEstadoCuota(tx, Number(cuotaId));
 
@@ -456,16 +523,18 @@ export async function crear(req, res, next) {
       );
       const nuevoSaldoIngreso = round2(ingresoTotal - nuevoAplicadoIngreso);
 
-      const nuevoAplicadoCuota = toNum(
-        (await tx.ingresoCuota.aggregate({
-          _sum: { montoAplicadoARS: true },
-          where: { cuotaId: Number(cuotaId), deletedAt: null, activo: true },
-        }))._sum.montoAplicadoARS
-      );
-      const cuotaTotalARSForResumen = esCuotaJUS(cuota) && vj
-        ? round2(toNum(cuota.montoJus) * vj)
-        : cuotaTotalARS(cuota);
-      const nuevoSaldoCuota = round2(cuotaTotalARSForResumen - nuevoAplicadoCuota);
+              const nuevoAplicadoCuota = toNum(
+          (await tx.ingresoCuota.aggregate({
+            _sum: { montoAplicadoARS: true },
+            where: { cuotaId: Number(cuotaId), deletedAt: null, activo: true },
+          }))._sum.montoAplicadoARS
+        );
+        // Para el resumen, usar vjParaCalculos si la cuota fue actualizada, sino usar el valor actualizado de la cuota
+        const vjParaResumen = esCuotaJUS(cuota) ? (vjParaCalculos > 0 ? vjParaCalculos : toNum(cuota.valorJusRef)) : null;
+        const cuotaTotalARSForResumen = esCuotaJUS(cuota) && vjParaResumen
+          ? round2(toNum(cuota.montoJus) * vjParaResumen)
+          : cuotaTotalARS(cuota);
+        const nuevoSaldoCuota = round2(cuotaTotalARSForResumen - nuevoAplicadoCuota);
 
       return {
         app,
@@ -478,9 +547,9 @@ export async function crear(req, res, next) {
     });
 
     // 👇 NUEVO: recomputar estado del HONORARIO después de la tx
-    if (result.honorarioId) {
-      await recomputeHonorarioEstadoSaldo(result.honorarioId);
-    }
+if (result.honorarioId && recomputeHonorarioEstadoSaldo) {
+  await recomputeHonorarioEstadoSaldo(result.honorarioId);
+}
 
     res.status(201).json(result);
   } catch (e) {
@@ -500,7 +569,7 @@ export async function actualizar(req, res, next) {
 
     const parsed = actualizarAplicacionCuotaSchema.safeParse(req.body);
     if (!parsed.success) {
-      return next({ status: 400, publicMessage: parsed.error.errors.map(e => e.message).join(", ") });
+      return next({ status: 400, publicMessage: getZodErrorMessages(parsed.error) });
     }
     const { monto, fechaAplicacion } = parsed.data;
     const updatedBy = req.user?.id ?? null;
@@ -518,50 +587,77 @@ export async function actualizar(req, res, next) {
       });
       if (!ingreso) throw { status: 404, publicMessage: "Ingreso no encontrado" };
 
-      const cuota = await tx.planCuota.findFirst({
-        where: { id: app.cuotaId, deletedAt: null, activo: true },
-        select: { id: true, montoJus: true, montoPesos: true, valorJusRef: true, vencimiento: true, planId: true },
-      });
-      if (!cuota) throw { status: 404, publicMessage: "Cuota no encontrada" };
+              // Cuota con plan (para obtener política JUS)
+        const cuota = await tx.planCuota.findFirst({
+          where: { id: app.cuotaId, deletedAt: null, activo: true },
+          select: { 
+            id: true, 
+            montoJus: true, 
+            montoPesos: true, 
+            valorJusRef: true, 
+            vencimiento: true, 
+            planId: true,
+            plan: {
+              select: {
+                politicaJusId: true,
+              },
+            },
+          },
+        });
+        if (!cuota) throw { status: 404, publicMessage: "Cuota no encontrada" };
 
-      const ingresoTotal = ingresoTotalARS(ingreso);
+        const ingresoTotal = ingresoTotalARS(ingreso);
 
-      const aplicadoIngresoSinEsta = toNum(
-        (await tx.ingresoCuota.aggregate({
-          _sum: { montoAplicadoARS: true },
-          where: { ingresoId: app.ingresoId, deletedAt: null, activo: true, NOT: { id } },
-        }))._sum.montoAplicadoARS
-      );
-      const saldoIngresoARS = round2(ingresoTotal - aplicadoIngresoSinEsta);
-
-      const fechaNueva = fechaAplicacion ?? app.fechaAplicacion ?? ingreso.fechaIngreso ?? new Date();
-      let vj = app.valorJusAlAplic;
-      if (fechaAplicacion != null || monto != null || !vj) {
-        vj = toNum(ingreso.valorJusAlCobro) || (await findValorJusSnapshot(fechaNueva));
-      }
-
-      let maxCuotaAplicableARS;
-      if (esCuotaJUS(cuota)) {
-        const totalJUS = toNum(cuota.montoJus);
-        const aplicadoJUSsinEsta = toNum(
-          (await tx.ingresoCuota.aggregate({
-            _sum: { montoAplicadoJUS: true },
-            where: { cuotaId: app.cuotaId, deletedAt: null, activo: true, NOT: { id } },
-          }))._sum.montoAplicadoJUS
-        );
-        const saldoJUS = round2(totalJUS - aplicadoJUSsinEsta);
-        if (!(vj > 0)) throw { status: 400, publicMessage: "No se pudo obtener el valor JUS para la fecha de aplicación" };
-        maxCuotaAplicableARS = round2(Math.max(0, saldoJUS) * vj);
-      } else {
-        const totalARS = cuotaTotalARS(cuota);
-        const aplicadoARSsinEsta = toNum(
+        const aplicadoIngresoSinEsta = toNum(
           (await tx.ingresoCuota.aggregate({
             _sum: { montoAplicadoARS: true },
-            where: { cuotaId: app.cuotaId, deletedAt: null, activo: true, NOT: { id } },
+            where: { ingresoId: app.ingresoId, deletedAt: null, activo: true, NOT: { id } },
           }))._sum.montoAplicadoARS
         );
-        maxCuotaAplicableARS = round2(totalARS - aplicadoARSsinEsta);
-      }
+        const saldoIngresoARS = round2(ingresoTotal - aplicadoIngresoSinEsta);
+
+        const fechaNueva = fechaAplicacion ?? app.fechaAplicacion ?? ingreso.fechaIngreso ?? new Date();
+        const vjIngreso = toNum(ingreso.valorJusAlCobro) || (await findValorJusSnapshot(fechaNueva));
+        
+        // Determinar el valor JUS a usar para los cálculos:
+        // - Si la cuota ya tiene valorJusRef, usarlo (para cuotas ya pagadas parcialmente)
+        // - Si no tiene valorJusRef, usar el valor JUS del ingreso
+        let vjParaCalculos = toNum(cuota.valorJusRef);
+        if (!vjParaCalculos && esCuotaJUS(cuota)) {
+          vjParaCalculos = vjIngreso;
+        }
+
+        // Para valorJusAlAplic de la aplicación: usar el valor guardado si no cambió la fecha, sino recalcular
+        let vjParaAplic = app.valorJusAlAplic;
+        if (fechaAplicacion != null || monto != null || !vjParaAplic) {
+          // Si la cuota tiene valorJusRef, usarlo; sino usar el del ingreso
+          vjParaAplic = vjParaCalculos > 0 ? vjParaCalculos : vjIngreso;
+        }
+
+        let maxCuotaAplicableARS;
+        if (esCuotaJUS(cuota)) {
+          const totalJUS = toNum(cuota.montoJus);
+          const aplicadoJUSsinEsta = toNum(
+            (await tx.ingresoCuota.aggregate({
+              _sum: { montoAplicadoJUS: true },
+              where: { cuotaId: app.cuotaId, deletedAt: null, activo: true, NOT: { id } },
+            }))._sum.montoAplicadoJUS
+          );
+          // ✅ NO redondear saldoJUS aquí - mantener precisión hasta multiplicar por vj
+          const saldoJUS = totalJUS - aplicadoJUSsinEsta;
+          if (!(vjParaCalculos > 0)) throw { status: 400, publicMessage: "No se pudo obtener el valor JUS para la fecha de aplicación" };
+          // ✅ Redondear solo al final, después de multiplicar
+          maxCuotaAplicableARS = round2(Math.max(0, saldoJUS) * vjParaCalculos);
+        } else {
+          const totalARS = cuotaTotalARS(cuota);
+          const aplicadoARSsinEsta = toNum(
+            (await tx.ingresoCuota.aggregate({
+              _sum: { montoAplicadoARS: true },
+              where: { cuotaId: app.cuotaId, deletedAt: null, activo: true, NOT: { id } },
+            }))._sum.montoAplicadoARS
+          );
+          maxCuotaAplicableARS = round2(totalARS - aplicadoARSsinEsta);
+        }
 
       const nuevoMontoARS = monto ?? app.montoAplicadoARS;
       const maxAplicable = Math.max(0, Math.min(saldoIngresoARS, maxCuotaAplicableARS));
@@ -569,18 +665,23 @@ export async function actualizar(req, res, next) {
         throw { status: 400, publicMessage: `Monto supera el disponible. Máximo aplicable ARS ${maxAplicable.toFixed(2)}` };
       }
 
-      const dataUpdate = {
-        ...(monto != null ? { montoAplicadoARS: round2(nuevoMontoARS) } : {}),
-        ...(fechaAplicacion != null ? { fechaAplicacion: fechaNueva } : {}),
-        ...(vj ? {
-          valorJusAlAplic: vj,
-          montoAplicadoJUS: round2((monto != null ? toNum(nuevoMontoARS) : toNum(app.montoAplicadoARS)) / vj),
-        } : {
-          valorJusAlAplic: null,
-          montoAplicadoJUS: null,
-        }),
-        updatedBy,
-      };
+              // ✅ Calcular montoAplicadoJUS ANTES de redondear montoAplicadoARS para mantener precisión
+              const montoParaJUS = monto != null ? toNum(nuevoMontoARS) : toNum(app.montoAplicadoARS);
+              const montoAplicadoARSFinal = monto != null ? round2(nuevoMontoARS) : undefined;
+              const montoAplicadoJUSFinal = vjParaAplic ? round6(montoParaJUS / vjParaAplic) : null;
+              
+              const dataUpdate = {
+          ...(monto != null ? { montoAplicadoARS: montoAplicadoARSFinal } : {}),
+          ...(fechaAplicacion != null ? { fechaAplicacion: fechaNueva } : {}),
+          ...(vjParaAplic ? {
+            valorJusAlAplic: vjParaAplic,
+            montoAplicadoJUS: montoAplicadoJUSFinal,
+          } : {
+            valorJusAlAplic: null,
+            montoAplicadoJUS: null,
+          }),
+          updatedBy,
+        };
 
       const upd = await tx.ingresoCuota.update({ where: { id }, data: dataUpdate });
 
@@ -598,9 +699,10 @@ export async function actualizar(req, res, next) {
         }))._sum.montoAplicadoARS
       );
 
-      const cuotaTotalARSForResumen = esCuotaJUS(cuota) && vj
-        ? round2(toNum(cuota.montoJus) * vj)
-        : cuotaTotalARS(cuota);
+              const vjParaResumen = esCuotaJUS(cuota) ? (vjParaCalculos > 0 ? vjParaCalculos : toNum(cuota.valorJusRef)) : null;
+        const cuotaTotalARSForResumen = esCuotaJUS(cuota) && vjParaResumen
+          ? round2(toNum(cuota.montoJus) * vjParaResumen)
+          : cuotaTotalARS(cuota);
 
       await recalcularEstadoCuota(tx, app.cuotaId);
 
@@ -632,9 +734,9 @@ export async function actualizar(req, res, next) {
     });
 
     // 👇 NUEVO
-    if (result.honorarioId) {
-      await recomputeHonorarioEstadoSaldo(result.honorarioId);
-    }
+if (result.honorarioId && recomputeHonorarioEstadoSaldo) {
+  await recomputeHonorarioEstadoSaldo(result.honorarioId);
+}
 
     res.json(result);
   } catch (e) {
@@ -711,9 +813,9 @@ export async function borrar(req, res, next) {
     });
 
     // 👇 NUEVO
-    if (result.honorarioId) {
-      await recomputeHonorarioEstadoSaldo(result.honorarioId);
-    }
+if (result.honorarioId && recomputeHonorarioEstadoSaldo) {
+  await recomputeHonorarioEstadoSaldo(result.honorarioId);
+}
 
     res.json(result);
   } catch (e) {

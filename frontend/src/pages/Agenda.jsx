@@ -495,6 +495,7 @@ export default function Agenda() {
 
   // Diálogo "Nuevo" (mobile)
   const [newOpen, setNewOpen] = useState(false);
+  const [selectedSlotDate, setSelectedSlotDate] = useState(null);
 
   const queryClient = useQueryClient();
 
@@ -508,13 +509,14 @@ export default function Agenda() {
   }, [date]);
 
   // Crear navegación
-  const handleCreate = useCallback((kind) => {
+  const handleCreate = useCallback((kind, fechaInicio) => {
     const qs = new URLSearchParams();
+    const fecha = fechaInicio || defaultStart;
     if (kind === "evento") {
-      qs.set("fechaInicio", defaultStart.toISOString());
+      qs.set("fechaInicio", fecha.toISOString());
       nav(`/eventos/nuevo?${qs.toString()}`, { state: { from: "/agenda" } });
     } else {
-      qs.set("fechaLimite", defaultStart.toISOString());
+      qs.set("fechaLimite", fecha.toISOString());
       nav(`/tareas/nuevo?${qs.toString()}`, { state: { from: "/agenda" } });
     }
   }, [defaultStart, nav]);
@@ -940,9 +942,13 @@ export default function Agenda() {
 
             ".rbc-time-gutter, .rbc-timeslot-group": { borderColor: subGrid },
             ".rbc-time-gutter .rbc-timeslot-group": { borderRight: `1px solid ${grid}` },
-            ".rbc-time-gutter .rbc-time-slot": { color: t.palette.text.secondary, fontSize: 12 },
+            ".rbc-time-gutter .rbc-time-slot": { 
+              color: t.palette.text.secondary, 
+              fontSize: 12,
+            },
 
-            ".rbc-allday-cell": { borderBottom: `1px solid ${grid}` },
+            // Ocultar la fila "All Day" si está vacía o siempre
+            ".rbc-allday-cell": { display: "none !important" },
 
             ".rbc-event": {
               borderRadius: 8, 
@@ -976,10 +982,6 @@ export default function Agenda() {
               padding: "1px 6px", 
               fontWeight: 800,
               fontSize: "0.75rem",
-            },
-            // Mejorar altura de celdas para mostrar más información
-            ".rbc-day-slot .rbc-time-slot": {
-              minHeight: "60px",
             },
           };
         }}
@@ -1041,18 +1043,25 @@ export default function Agenda() {
           onView={(v) => setView(v)}
           onNavigate={(d) => setDate(d)}
           onRangeChange={() => {}}
+          selectable
           onSelectEvent={onSelectEvent}
           onSelectSlot={(slotInfo) => {
             // Abrir modal para crear evento/tarea al hacer click en un slot vacío
             if (!slotInfo.slots.length) return;
-            setOpenDetail(false);
+            
+            // Obtener la fecha/hora del slot seleccionado
+            const slotStart = slotInfo.slots[0];
+            
+            // Guardar la fecha y abrir el dialog de selección
+            setSelectedSlotDate(slotStart);
+            setNewOpen(true);
           }}
           popup
           toolbar={false}
-          scrollToTime={new Date(0, 0, 0, 6, 0, 0)}
+          scrollToTime={new Date(0, 0, 0, 8, 0, 0)}
           dayLayoutAlgorithm={view === Views.DAY ? "no-overlap" : "overlap"}
-          step={30}
-          timeslots={2}
+          step={60}
+          timeslots={1}
           style={{ height: "75vh", minHeight: 500, borderRadius: 8, padding: 4 }}
           eventPropGetter={eventPropGetter}
           components={{
@@ -1087,13 +1096,17 @@ export default function Agenda() {
         onPick={handlePickFromSummary}
       />
 
-      {/* Diálogo NUEVO (mobile) */}
+      {/* Diálogo NUEVO (mobile y desktop click en slot) */}
       <NewItemDialog
         open={newOpen}
-        onClose={() => setNewOpen(false)}
+        onClose={() => {
+          setNewOpen(false);
+          setSelectedSlotDate(null);
+        }}
         onCreate={(kind) => {
           setNewOpen(false);
-          handleCreate(kind);
+          handleCreate(kind, selectedSlotDate);
+          setSelectedSlotDate(null);
         }}
         canCrearEvento={canCrearEvento}
         canCrearTarea={canCrearTarea}

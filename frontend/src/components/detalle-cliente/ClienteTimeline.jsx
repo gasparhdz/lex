@@ -10,6 +10,11 @@ import {
   Alert,
   CircularProgress,
   Chip,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableRow,
 } from "@mui/material";
 import api from "../../api/axios";
 import { usePermiso } from "../../auth/usePermissions";
@@ -72,6 +77,10 @@ export default function ClienteTimeline({ clienteId, cliente, casos, tareas, eve
     return campos[campo] || campo;
   };
 
+  const formatearTituloHistorial = (h) => {
+    return formatearCampo(h.campo);
+  };
+
   // Combinar y ordenar todos los items cronológicamente
   const timelineItems = useMemo(() => {
     const items = [];
@@ -82,9 +91,9 @@ export default function ClienteTimeline({ clienteId, cliente, casos, tareas, eve
         id: `hist-${h.id}`,
         tipo: "cambio",
         fecha: dayjs(h.createdAt).toDate(),
-        titulo: `Cambio en ${formatearCampo(h.campo)}`,
+        titulo: formatearTituloHistorial(h),
         subtitulo: h.valorAnterior ? `${h.valorAnterior} → ${h.valorNuevo}` : h.valorNuevo,
-        icon: <History />,
+        icon: <History fontSize="small" />,
         color: "info",
       });
     });
@@ -95,9 +104,9 @@ export default function ClienteTimeline({ clienteId, cliente, casos, tareas, eve
         id: `event-${e.id}`,
         tipo: "evento",
         fecha: dayjs(e.fecha).toDate(),
-        titulo: e.titulo || "Evento sin título",
+        titulo: `Evento: ${e.titulo || "sin título"}`,
         subtitulo: e.descripcion,
-        icon: <EventOutlined />,
+        icon: <EventOutlined fontSize="small" />,
         color: "primary",
         original: e,
       });
@@ -109,9 +118,9 @@ export default function ClienteTimeline({ clienteId, cliente, casos, tareas, eve
         id: `tarea-${t.id}`,
         tipo: "tarea",
         fecha: dayjs(t.fechaCreacion).toDate(),
-        titulo: t.titulo || "Tarea sin título",
+        titulo: t.completada ? `Tarea completada: ${t.titulo || "sin título"}` : `Tarea creada: ${t.titulo || "sin título"}`,
         subtitulo: t.descripcion,
-        icon: <AssignmentOutlined />,
+        icon: <AssignmentOutlined fontSize="small" />,
         color: t.completada ? "success" : "warning",
         original: t,
       });
@@ -123,9 +132,9 @@ export default function ClienteTimeline({ clienteId, cliente, casos, tareas, eve
         id: `caso-${c.id}`,
         tipo: "caso",
         fecha: dayjs(c.createdAt || new Date()).toDate(),
-        titulo: `Caso: ${c.nroExpte}`,
+        titulo: `Caso creado: ${c.nroExpte || 'sin expediente'}`,
         subtitulo: c.caratula,
-        icon: <Gavel />,
+        icon: <Gavel fontSize="small" />,
         color: "primary",
         original: c,
       });
@@ -137,9 +146,9 @@ export default function ClienteTimeline({ clienteId, cliente, casos, tareas, eve
         id: `nota-${n.id}`,
         tipo: "nota",
         fecha: dayjs(n.createdAt).toDate(),
-        titulo: "Nota",
+        titulo: "Nota agregada",
         subtitulo: n.contenido,
-        icon: <Notes />,
+        icon: <Notes fontSize="small" />,
         color: "default",
       });
     });
@@ -147,6 +156,9 @@ export default function ClienteTimeline({ clienteId, cliente, casos, tareas, eve
     // Ordenar por fecha descendente (más recientes primero)
     return items.sort((a, b) => b.fecha.getTime() - a.fecha.getTime());
   }, [historial, eventos, tareas, casos, notas]);
+
+  // Mostrar todos los items
+  const displayItems = timelineItems;
 
   if (!canViewClientes) {
     return null;
@@ -170,54 +182,62 @@ export default function ClienteTimeline({ clienteId, cliente, casos, tareas, eve
 
   return (
     <Box>
-      {timelineItems.map((item) => (
-        <Card key={item.id} variant="outlined" sx={{ mb: 2 }}>
-          <CardContent>
-            <Stack direction="row" spacing={2} alignItems="flex-start">
-              <Box
-                sx={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: "50%",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  bgcolor: (t) => {
-                    if (item.color === "success") return t.palette.success.main;
-                    if (item.color === "warning") return t.palette.warning.main;
-                    if (item.color === "primary") return t.palette.primary.main;
-                    if (item.color === "info") return t.palette.info.main;
-                    return t.palette.action.disabled;
-                  },
-                  color: "white",
-                  flexShrink: 0,
-                }}
-              >
-                {item.icon}
-              </Box>
-              <Box sx={{ flex: 1, minWidth: 0 }}>
-                <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", mb: 0.5 }}>
-                  <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                    {item.titulo}
+      <TableContainer sx={{ maxHeight: 200, overflowY: 'auto', overflowX: 'hidden' }}>
+        <Table size="small">
+          <TableBody>
+            {displayItems.map((item) => (
+              <TableRow key={item.id} hover>
+                <TableCell sx={{ width: 32, py: 0.5, px: 1 }}>
+                  <Box
+                    sx={{
+                      width: 24,
+                      height: 24,
+                      borderRadius: "50%",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      bgcolor: (t) => {
+                        if (item.color === "success") return t.palette.success.main;
+                        if (item.color === "warning") return t.palette.warning.main;
+                        if (item.color === "primary") return t.palette.primary.main;
+                        if (item.color === "info") return t.palette.info.main;
+                        return t.palette.action.disabled;
+                      },
+                      color: "white",
+                      flexShrink: 0,
+                    }}
+                  >
+                    {item.icon}
+                  </Box>
+                </TableCell>
+                <TableCell sx={{ py: 0.5, px: 1 }}>
+                  <Box>
+                    <Typography variant="caption" sx={{ fontWeight: 600, display: 'block' }}>
+                      {item.titulo}
+                    </Typography>
+                    {item.subtitulo && (
+                      <Typography variant="caption" color="text.secondary" sx={{ 
+                        display: 'block',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        fontSize: '0.7rem'
+                      }}>
+                        {item.subtitulo}
+                      </Typography>
+                    )}
+                  </Box>
+                </TableCell>
+                <TableCell align="right" sx={{ py: 0.5, px: 1 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    {formatearFechaRelativa(item.fecha)}
                   </Typography>
-                  <Chip label={formatearFechaRelativa(item.fecha)} size="small" variant="outlined" />
-                </Box>
-                {item.subtitulo && (
-                  <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                    {item.subtitulo}
-                  </Typography>
-                )}
-                <Chip 
-                  label={formatearFecha(item.fecha)} 
-                  size="small" 
-                  variant="outlined" 
-                  sx={{ mt: 1 }}
-                />
-              </Box>
-            </Stack>
-          </CardContent>
-        </Card>
-      ))}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
     </Box>
   );
 }

@@ -40,7 +40,7 @@ import {
   resumenIngresoCuotas,
   listAplicacionesCuota,
 } from "../api/finanzas/ingreso-cuota";
-import { crearAplicacionIngresoGasto, listAplicacionesGasto } from "../api/finanzas/ingreso-gasto";
+import { crearAplicacionIngresoGasto, listAplicacionesGasto, getResumenIngresoGastos } from "../api/finanzas/ingreso-gasto";
 
 /* ====== configuración dayjs ====== */
 dayjs.locale("es");
@@ -116,9 +116,40 @@ const toIsoDateOnly = (v) => {
 
 function toDayjsDateOnly(v) {
   if (!v) return null;
-  const s = String(v);
-  const dateOnly = /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : new Date(s).toISOString().slice(0, 10);
-  return dayjs(dateOnly);
+
+  // Si ya es un objeto dayjs válido, devolverlo
+  if (dayjs.isDayjs(v) && v.isValid()) {
+    return v;
+  }
+
+  // Si es un objeto Date válido, convertirlo a dayjs
+  if (v instanceof Date && !isNaN(v.getTime())) {
+    return dayjs(v);
+  }
+
+  const s = String(v).trim();
+
+  // Si coincide con el patrón YYYY-MM-DD, usarlo directamente
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+    const dateOnly = s.slice(0, 10);
+    const dayjsDate = dayjs(dateOnly);
+    return dayjsDate.isValid() ? dayjsDate : null;
+  }
+
+  // Intentar parsear como fecha
+  const date = new Date(s);
+  if (isNaN(date.getTime())) {
+    return null; // Fecha inválida
+  }
+
+  // Convertir a ISO string solo si la fecha es válida
+  try {
+    const dateOnly = date.toISOString().slice(0, 10);
+    const dayjsDate = dayjs(dateOnly);
+    return dayjsDate.isValid() ? dayjsDate : null;
+  } catch (e) {
+    return null; // Error al convertir, retornar null
+  }
 }
 
 const displayCliente = (c) => {
@@ -145,6 +176,63 @@ const CAT_MONEDA = 14;
 const CAT_TIPO_NAME = 13;
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
 
+// Helper para parsear montos en ARS desde diferentes formatos
+// Soporta: "110000.00", "110.000,00", "$ 110.000,00", "110000", etc.
+function parseARS(value) {
+  if (value == null || value === "") return 0;
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : 0;
+  }
+  const str = String(value).trim();
+  if (!str) return 0;
+
+  // Remover símbolos de moneda y espacios
+  let cleaned = str.replace(/[$€]/g, "").replace(/\s/g, "");
+
+  // Si tiene coma y punto -> asumir formato miles "." y decimal ","
+  if (cleaned.includes(",") && cleaned.includes(".")) {
+    cleaned = cleaned.replace(/\./g, "").replace(",", ".");
+  } else if (cleaned.includes(",") && !cleaned.includes(".")) {
+    const parts = cleaned.split(",");
+    if (parts.length === 2 && parts[1].length <= 2) {
+      cleaned = cleaned.replace(",", ".");
+    } else {
+      cleaned = cleaned.replace(/,/g, "");
+    }
+  } else if (cleaned.includes(".")) {
+    const parts = cleaned.split(".");
+    if (!(parts.length === 2 && parts[1].length <= 2)) {
+      cleaned = cleaned.replace(/\./g, "");
+    }
+  }
+
+  cleaned = cleaned.replace(/[^\d.-]/g, "");
+  const num = parseFloat(cleaned);
+  return Number.isFinite(num) ? num : 0;
+}
+
+// Helper para extraer array de rows desde diferentes estructuras de respuesta
+function extractRows(data) {
+  if (!data) return [];
+  if (Array.isArray(data)) return data;
+
+  if (data.rows && Array.isArray(data.rows)) return data.rows;
+
+  if (data.data) {
+    if (Array.isArray(data.data)) return data.data;
+    if (data.data.rows && Array.isArray(data.data.rows)) return data.data.rows;
+    if (data.data.data && Array.isArray(data.data.data)) return data.data.data;
+
+    // 👉 si tu backend devuelve { data: { items: [...] } } o algo similar,
+    // acá es donde lo vas a ver en el DEBUG y lo agregamos.
+    if (data.data.items && Array.isArray(data.data.items)) return data.data.items;
+  }
+
+  if (data.items && Array.isArray(data.items)) return data.items;
+
+  return [];
+}
+
 /* ================= Componente ================= */
 export default function IngresoForm() {
   const { id } = useParams();
@@ -170,13 +258,30 @@ export default function IngresoForm() {
   const canEditarFinanzas = usePermiso('FINANZAS', 'editar');
 
   // de dónde venimos (ClienteDetalle / CasoDetalle o módulo Finanzas)
-  const backTo = useMemo(
-    () => location.state?.from || "/finanzas/ingresos",
-    [location.state]
-  );
+  const normalizeBackTo = useMemo(() => {
+    const from = location.state?.from;
+
+    if (from && typeof from === 'object' && from.pathname) {
+      if (from.pathname === '/finanzas' && from.search) return from.pathname + from.search;
+      if (from.pathname === '/finanzas' && !from.search) return "/finanzas?tab=ingresos";
+      if (from.pathname === '/finanzas/ingresos' || from.pathname.includes('/finanzas/ingresos')) return "/finanzas?tab=ingresos";
+      if (from.search) return from.pathname + from.search;
+      return from.pathname || from;
+    }
+
+    const fromStr = typeof from === 'string' ? from : '';
+    if (fromStr.includes('/finanzas/ingresos') || (fromStr === '/finanzas')) return "/finanzas?tab=ingresos";
+    if (fromStr && (fromStr.startsWith('/clientes/') || fromStr.startsWith('/casos/'))) return fromStr;
+
+    return "/finanzas?tab=ingresos";
+  }, [location.state]);
+
+  const backTo = normalizeBackTo;
+
   const cameFromDetail = useMemo(() => {
     const from = location.state?.from || "";
-    return /^\/(clientes|casos)\//.test(from);
+    const fromPath = typeof from === 'object' ? from.pathname : from;
+    return /^\/(clientes|casos)\//.test(fromPath);
   }, [location.state]);
 
   const prefill = location.state?.prefill || location.state?.preset || null;
@@ -208,7 +313,7 @@ export default function IngresoForm() {
       tipoId: "",
     },
   });
-  
+
   const watchClienteId = watch('clienteId');
   const watchCasoId = watch('casoId');
 
@@ -277,7 +382,7 @@ export default function IngresoForm() {
 
   const { data: appsPrevias, isLoading: appsPreviasLoading } = useQuery({
     queryKey: ["apps-previas-ingreso", id],
-    queryFn: () => listAplicacionesCuota({ ingresoId: Number(id), pageSize: 100 }),
+    queryFn: () => listAplicacionesCuota({ ingresoId: Number(id), page: 1, pageSize: 500 }),
     enabled: editMode && !!id,
     staleTime: 15_000,
   });
@@ -290,6 +395,15 @@ export default function IngresoForm() {
     staleTime: 15_000,
   });
 
+  /* 🔹 Resumen de gastos (fallback) */
+  const { data: resumenGastosEdit } = useQuery({
+    queryKey: ["resumen-ingreso-gastos", id],
+    queryFn: () => getResumenIngresoGastos(Number(id)),
+    enabled: editMode && !!id,
+    staleTime: 15_000,
+  });
+
+
   /* En edición: usar snapshot guardado */
   const valorJusNum = useMemo(() => {
     const vEdit = Number(ingreso?.valorJusAlCobro ?? ingreso?.valorJus ?? 0);
@@ -299,9 +413,15 @@ export default function IngresoForm() {
   }, [editMode, ingreso, valorJusResp]);
 
   /* precarga edición */
+  const initialStateRef = useRef({
+    appsHonNew: null,
+    appsGas: null,
+    formValues: null,
+  });
+
   useEffect(() => {
     if (!ingreso) return;
-    reset({
+    const initialFormValues = {
       fechaIngreso: ingreso.fechaIngreso ? toDayjsDateOnly(ingreso.fechaIngreso) : dayjs(),
       clienteId: ingreso.clienteId ? String(ingreso.clienteId) : "",
       casoId: ingreso.casoId ? String(ingreso.casoId) : "",
@@ -309,7 +429,9 @@ export default function IngresoForm() {
       montoStr: ingreso.monto != null ? String(ingreso.monto) : "",
       monedaId: ingreso.monedaId ? String(ingreso.monedaId) : "",
       tipoId: ingreso.tipoId ? String(ingreso.tipoId) : "",
-    });
+    };
+    reset(initialFormValues);
+    initialStateRef.current.formValues = initialFormValues;
   }, [ingreso, reset]);
 
   /* defaults */
@@ -386,7 +508,7 @@ export default function IngresoForm() {
           state: { from: backTo, mode: "ver" },
         });
       } else {
-        nav("/finanzas/ingresos", { replace: true });
+        nav(backTo, { replace: true });
       }
     },
     retry: 0,
@@ -396,12 +518,12 @@ export default function IngresoForm() {
   const [appsHonNew, setAppsHonNew] = useState([]);
   const [appsGas, setAppsGas] = useState([]);
   const [selectionTouched, setSelectionTouched] = useState(false);
+  const [gastosTouched, setGastosTouched] = useState(false);
+  const prevAppsGasRef = useRef(null);
 
-  // ─── Confirmación de ajuste parcial (UX) ─────────────────────
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmInfo, setConfirmInfo] = useState(null);
 
-  // contadores visibles en headers de acordeones
   const cuotasSelCount = useMemo(() => {
     let acc = 0;
     for (const item of appsHonNew || []) {
@@ -412,7 +534,6 @@ export default function IngresoForm() {
   }, [appsHonNew]);
   const gastosSelCount = (appsGas || []).length;
 
-  // mapeo de concepto → uiMode
   const tipoSel = useMemo(
     () => tipos.find((t) => String(t.id) === String(tipoIdVal)) || null,
     [tipos, tipoIdVal]
@@ -428,7 +549,7 @@ export default function IngresoForm() {
       case "HONORARIOS":
         return "honOnly";
       default:
-        return "bothSections"; // sin concepto
+        return "bothSections";
     }
   }, [tipoCodigo]);
 
@@ -441,97 +562,273 @@ export default function IngresoForm() {
       const vj = Number(valorJusNum || 0);
       return vj > 0 ? round2(n * vj) : 0;
     }
-    return round2(n); // ARS
+    return round2(n);
   }, [montoStrVal, isJUS, valorJusNum]);
 
-  const useResumenInicial = editMode && !selectionTouched;
-
-  const { data: appsPreviasData } = { data: appsPrevias };
-  const aplicadoInicialARS = useMemo(() => {
-    const r = Number(resumenEdit?.aplicadoARS || 0);
-    if (r > 0) return round2(r);
-    const rows = appsPreviasData?.rows || appsPreviasData?.data || [];
-    if (rows?.length) {
-      const sum = rows.reduce((acc, it) => acc + Number(it?.montoAplicadoARS ?? it?.monto ?? 0), 0);
-      return round2(sum);
-    }
-    return 0;
-  }, [resumenEdit, appsPreviasData]);
-
-  // Total seleccionado en HONORARIOS (suma lo que está tildado en pantalla)
   const totalSelHonARS = useMemo(() => {
-    let acc = 0;
-    for (const item of appsHonNew || []) {
-      const sel = item?.selectedCuotas || {};
-      for (const c of item?.cuotasResolved || []) {
-        if (sel[String(c.id)]) {
-          // Usar el saldo actual de la cuota (lo que realmente se aplicará)
-          const saldo = Number(c?.saldoARS || 0);
-          acc += saldo;
+    if (selectionTouched) {
+      if (appsHonNew && appsHonNew.length > 0) {
+        let acc = 0;
+        for (const item of appsHonNew) {
+          const sel = item?.selectedCuotas || {};
+          const appliedById = item?.appliedHereById || {};
+          const cuotasResolved = item?.cuotasResolved || [];
+          const selKeys = Object.keys(sel || {}).filter((k) => sel[k]);
+
+          if (cuotasResolved.length > 0) {
+            for (const c of cuotasResolved) {
+              const cid = String(c.id);
+              if (sel[cid]) acc += Number(appliedById[cid] || 0);
+            }
+          } else {
+            // ✅ NO depende de expandir: usa lo precargado
+            for (const cid of selKeys) {
+              acc += Number(appliedById[cid] || 0);
+            }
+          }
+
         }
+        return Math.round(acc * 100) / 100;
       }
-    }
-    return Math.round(acc * 100) / 100;
-  }, [appsHonNew]);
-  // Total seleccionado en GASTOS (suma lo que está tildado en pantalla)
-  const totalSelGasARS = useMemo(() => {
-    // Si appsGas es un string, parsearlo
-    let arr = appsGas;
-    if (typeof appsGas === 'string') {
-      try {
-        arr = JSON.parse(appsGas);
-      } catch (e) {
-        console.error("Error parseando appsGas:", e);
-        arr = [];
-      }
-    }
-    if (!Array.isArray(arr)) {
-      console.error("appsGas no es un array:", arr);
       return 0;
     }
+
+    // ✅ Primero intentar desde appsPrevias (detalle)
+    const rows = extractRows(appsPrevias);
+    if (rows && rows.length > 0) {
+      const sum = rows.reduce((acc, it) => {
+        const montoRaw = it?.montoAplicadoARS ?? it?.monto ?? 0;
+        const monto = parseARS(montoRaw);
+        return acc + monto;
+      }, 0);
+      return Math.round(sum * 100) / 100;
+    }
+
+    // ✅ Fallback: usar resumenEdit.aplicadoARS si appsPrevias no está disponible
+    if (resumenEdit?.aplicadoARS != null) {
+      const aplicado = parseARS(resumenEdit.aplicadoARS);
+      return Math.round(aplicado * 100) / 100;
+    }
+
+    return 0;
+  }, [selectionTouched, appsPrevias, appsHonNew, resumenEdit]);
+
+  const totalSelGasARS = useMemo(() => {
+    // ✅ Normalizar appsGas a array
+    let arr = appsGas;
+    if (typeof appsGas === 'string') {
+      try { arr = JSON.parse(appsGas); } catch { arr = []; }
+    }
+    if (!Array.isArray(arr)) arr = [];
+
+    // ✅ Obtener rows de appsGastoPrevias para usar como referencia
+    const rowsPrevias = extractRows(appsGastoPrevias);
     
-    const sum = arr.reduce((s, it) => {
-      const montoStr = String(it?.monto || 0);
-      const montoNum = Number(montoStr.replace(/,/g, "."));
-      return s + (Number.isFinite(montoNum) && montoNum > 0 ? montoNum : 0);
-    }, 0);
-    return Math.round(sum * 100) / 100;
-  }, [appsGas]);
+    // ✅ Crear un mapa de gastoId -> monto desde appsGastoPrevias
+    const montoByGastoId = new Map();
+    if (rowsPrevias && rowsPrevias.length > 0) {
+      rowsPrevias.forEach((r) => {
+        const idG = r?.gastoId ?? r?.gasto?.id ?? r?.id;
+        if (idG) {
+          const montoRaw = r?.montoAplicadoARS ?? r?.monto ?? 0;
+          const monto = parseARS(montoRaw);
+          montoByGastoId.set(Number(idG), monto);
+        }
+      });
+    }
 
-  // Total seleccionado efectivo para mostrar en el resumen
-  // Siempre suma lo que está tildado en pantalla
-  const seleccionadoARS = totalSelHonARS + totalSelGasARS;
-  
+    // ✅ Si appsGas tiene datos, calcular sumando montos (si monto es 0, usar el de appsGastoPrevias si existe)
+    if (arr && arr.length > 0) {
+      const sum = arr.reduce((s, it) => {
+        const gastoId = Number(it?.gastoId);
+        const montoRaw = it?.monto || it?.montoAplicadoARS || it?.montoAplicado || 0;
+        let monto = parseARS(montoRaw);
+        
+        // ✅ Si el monto es 0 pero existe en appsGastoPrevias, usar ese valor (gasto precargado pero no modificado)
+        if (monto === 0 && gastoId && montoByGastoId.has(gastoId)) {
+          monto = montoByGastoId.get(gastoId);
+        }
+        
+        return s + monto;
+      }, 0);
+      return Math.round(sum * 100) / 100;
+    }
 
-  // precarga selección de gastos en EDICIÓN
-  useEffect(() => {
-    if (!editMode || !appsGastoPrevias || selectionTouched || appsGas.length > 0) return;
-    const rows = appsGastoPrevias?.rows || appsGastoPrevias?.data || appsGastoPrevias || [];
-    const mapped = rows
+    // ✅ Si no hay appsGas, intentar desde appsGastoPrevias (detalle)
+    if (rowsPrevias && rowsPrevias.length > 0) {
+      const sum = rowsPrevias.reduce((acc, r) => {
+        const montoRaw = r?.montoAplicadoARS ?? r?.monto ?? 0;
+        const monto = parseARS(montoRaw);
+        return acc + monto;
+      }, 0);
+      return Math.round(sum * 100) / 100;
+    }
+
+    // ✅ Fallback: usar resumenGastosEdit.aplicadoARS si appsGastoPrevias no está disponible
+    if (resumenGastosEdit?.aplicadoARS != null) {
+      const aplicado = parseARS(resumenGastosEdit.aplicadoARS);
+      return Math.round(aplicado * 100) / 100;
+    }
+
+    return 0;
+  }, [selectionTouched, appsGastoPrevias, appsGas, resumenGastosEdit]);
+
+  const seleccionadoARS = useMemo(() => {
+    return totalSelHonARS + totalSelGasARS;
+  }, [totalSelHonARS, totalSelGasARS]);
+
+  const gastosAplicadosAEsteIngreso = useMemo(() => {
+    if (!editMode) return [];
+    const rows = extractRows(appsGastoPrevias);
+    return rows
       .map((r) => {
         const idG = r?.gastoId ?? r?.gasto?.id ?? r?.id;
-        const monto = Number(r?.montoAplicadoARS ?? r?.monto ?? 0);
-        if (!idG || !Number.isFinite(monto) || monto <= 0) return null;
-        return { gastoId: Number(idG), monto: monto.toFixed(2) };
+        return idG ? Number(idG) : null;
       })
       .filter(Boolean);
-    setAplicGastos(mapped);
-    setAppsGas(mapped);
-  }, [editMode, appsGastoPrevias, selectionTouched, appsGas]);
+  }, [editMode, appsGastoPrevias]);
 
-  // precarga de aplicaciones a cuotas en EDICIÓN
-  // Las aplicaciones previas se muestran automáticamente por el componente IngresoCuotaForm
-  // pero no se precargan en appsHonNew, se basan en appsPrevias directamente
+  // ✅ precarga selección de gastos en EDICIÓN (arreglado parseARS + extractRows)
+  useEffect(() => {
+    if (!editMode || gastosTouched) return;
+    if (appsGastoPrevias && appsGas.length === 0) {
+      const rows = extractRows(appsGastoPrevias);
 
-  // ===== Navegación (Volver/Editar/Cancelar) =====
-  const handleBack = () => { nav(backTo || "/finanzas/ingresos"); };
-  const handleCancelEdit = () => { nav(-1); };
+      const mapped = rows
+        .map((r) => {
+          const idG = r?.gastoId ?? r?.gasto?.id ?? r?.id;
+          const monto = parseARS(r?.montoAplicadoARS ?? r?.monto ?? 0);
+          if (!idG || !Number.isFinite(monto) || monto <= 0) return null;
+          return { gastoId: Number(idG), monto: monto.toFixed(2) };
+        })
+        .filter(Boolean);
+
+      if (mapped.length > 0) {
+        setAplicGastos(mapped);
+        setAppsGas(mapped);
+        prevAppsGasRef.current = mapped;
+        if (initialStateRef.current.appsGas === null) {
+          initialStateRef.current.appsGas = JSON.parse(JSON.stringify(mapped));
+        }
+      } else {
+        if (initialStateRef.current.appsGas === null) initialStateRef.current.appsGas = [];
+      }
+    } else if (!appsGastoPrevias && appsGas.length === 0) {
+      if (initialStateRef.current.appsGas === null) initialStateRef.current.appsGas = [];
+    }
+  }, [editMode, appsGastoPrevias, gastosTouched, appsGas.length]);
+
+  // ✅ precarga selección de CUOTAS en EDICIÓN (desde appsPrevias)
+  const precargaCuotasHechaRef = useRef(false);
+  useEffect(() => {
+    if (!editMode) return;
+    if (selectionTouched) {
+      precargaCuotasHechaRef.current = true;
+      return; // si el usuario ya tocó, no pisar
+    }
+    if (precargaCuotasHechaRef.current) return; // si ya se precargó, no volver a hacerlo
+    if (!appsPrevias) return;
+
+    const rows = extractRows(appsPrevias);
+    if (!rows || rows.length === 0) {
+      if (initialStateRef.current.appsHonNew === null) initialStateRef.current.appsHonNew = [];
+      precargaCuotasHechaRef.current = true;
+      return;
+    }
+
+    // Agrupar por honorarioId si viene; fallback: por planId (cuota.planId)
+    const groupKey = (r) => String(r?.honorarioId ?? r?.cuota?.honorarioId ?? "0");
+
+    
+    const grouped = {};
+    for (const r of rows) {
+      const k = groupKey(r);
+      if (!grouped[k]) grouped[k] = [];
+      grouped[k].push(r);
+    }
+
+    // Armar estructura mínima compatible con tu IngresoCuotaForm
+    // (selectedCuotas + appliedHereById)
+    const next = Object.entries(grouped).map(([k, arr]) => {
+      const selectedCuotas = {};
+      const appliedHereById = {};
+
+      for (const r of arr) {
+        const cuotaId = Number(r?.cuotaId ?? r?.cuota?.id);
+        if (!Number.isFinite(cuotaId) || cuotaId <= 0) continue;
+
+        selectedCuotas[String(cuotaId)] = true;
+
+        const montoRaw = r?.montoAplicadoARS ?? r?.monto ?? 0;
+        appliedHereById[String(cuotaId)] = parseARS(montoRaw);
+      }
+
+      return {
+        // 🔸 importante: IngresoCuotaForm seguramente usa honorarioId
+        honorarioId: Number(k) > 0 ? Number(k) : null,
+
+        // lo que el form usa para renderizar selección y monto
+        selectedCuotas,
+        appliedHereById,
+
+        // placeholders (el form los completa cuando carga las cuotas)
+        cuotasResolved: [],
+        selectedNumMap: {},
+      };
+    });
+
+    if (next.length > 0) {
+      setAppsHonNew(next);
+
+      // guardar estado inicial para cancelar
+      if (initialStateRef.current.appsHonNew === null) {
+        initialStateRef.current.appsHonNew = JSON.parse(JSON.stringify(next));
+      }
+    } else {
+      if (initialStateRef.current.appsHonNew === null) initialStateRef.current.appsHonNew = [];
+    }
+    precargaCuotasHechaRef.current = true;
+  }, [editMode, appsPrevias, selectionTouched]); // ✅ Dependencias consistentes
+
+
+  useEffect(() => {
+    if (editMode && !selectionTouched && initialStateRef.current.appsHonNew === null) {
+      if (appsHonNew) initialStateRef.current.appsHonNew = JSON.parse(JSON.stringify(appsHonNew));
+      else initialStateRef.current.appsHonNew = [];
+    }
+  }, [editMode, appsHonNew, selectionTouched]);
+
+  const handleBack = () => { nav(backTo || "/finanzas?tab=ingresos"); };
+  const handleCancelEdit = () => {
+    if (editMode && initialStateRef.current) {
+      if (initialStateRef.current.formValues) reset(initialStateRef.current.formValues);
+
+      if (initialStateRef.current.appsHonNew !== null) setAppsHonNew(JSON.parse(JSON.stringify(initialStateRef.current.appsHonNew)));
+      else setAppsHonNew([]);
+
+      if (initialStateRef.current.appsGas !== null) {
+        const restoredGas = JSON.parse(JSON.stringify(initialStateRef.current.appsGas));
+        setAppsGas(restoredGas);
+        setAplicGastos(restoredGas);
+        prevAppsGasRef.current = restoredGas;
+      } else {
+        setAppsGas([]);
+        setAplicGastos([]);
+        prevAppsGasRef.current = null;
+      }
+
+      setSelectionTouched(false);
+      setGastosTouched(false);
+      precargaCuotasHechaRef.current = false; // Resetear flag de precarga
+    }
+    nav(backTo || "/finanzas?tab=ingresos");
+  };
+
   const handleGoEdit = () => {
     if (!id) return;
     nav(`/finanzas/ingresos/editar/${id}`, { state: { from: backTo } });
   };
 
-  // ========= Guardar =========
   const doReconciliar = async (payload, selectedCuotaIds) => {
     const body = { ...payload, selectedCuotaIds };
     await updateIngresoReconciliar(Number(id), body);
@@ -540,11 +837,10 @@ export default function IngresoForm() {
     if (cameFromDetail) {
       nav(`/finanzas/ingresos/${id}?mode=ver`, { replace: true, state: { from: backTo, mode: "ver" } });
     } else {
-      nav("/finanzas/ingresos", { replace: true });
+      nav(backTo, { replace: true });
     }
   };
 
-  // FIX: helper para extraer las cuotas seleccionadas del valor de IngresoCuotaForm
   const collectSelectedCuotaIds = (appsHonList) => {
     const ids = [];
     for (const item of appsHonList || []) {
@@ -553,7 +849,6 @@ export default function IngresoForm() {
         if (sel[String(c.id)]) ids.push(Number(c.id));
       }
     }
-    // quita duplicados por las dudas
     return Array.from(new Set(ids.filter(Boolean)));
   };
 
@@ -601,7 +896,6 @@ export default function IngresoForm() {
       payload.monto = montoNumber;
       delete payload.montoStr;
 
-      // Validar que lo seleccionado no exceda el importe
       const totalSeleccionado = totalSelHonARS + totalSelGasARS;
       if (totalSeleccionado > ingresoARS) {
         const diff = totalSeleccionado - ingresoARS;
@@ -612,12 +906,10 @@ export default function IngresoForm() {
         return;
       }
 
-      // ====== ALTA ======
       if (!editMode) {
         const nuevo = await crearMut.mutateAsync(payload);
         const ingresoId = nuevo?.id;
 
-        // 1) GASTOS (si corresponde)
         if (uiMode === "gastosOnly" || uiMode === "bothSections") {
           const gastosToCreate = (aplicGastos || []).map((a) => ({
             ingresoId,
@@ -625,18 +917,16 @@ export default function IngresoForm() {
             monto: Number(String(a.monto).replace(",", ".")),
           }));
           if (gastosToCreate.length) {
-            // importante: aplicar gastos primero → el reconciliar de cuotas usa el saldo restante
             for (const g of gastosToCreate) {
               await crearAplicacionIngresoGasto(g);
             }
           }
         }
 
-        // 2) CUOTAS (si corresponde)
         if (uiMode === "honOnly" || uiMode === "bothSections") {
           const selectedCuotaIds = collectSelectedCuotaIds(appsHonNew);
           if (selectedCuotaIds.length) {
-            await updateIngresoReconciliar(ingresoId, { selectedCuotaIds }); // FIX: aplica ingreso a cuotas
+            await updateIngresoReconciliar(ingresoId, { selectedCuotaIds });
           }
         }
 
@@ -646,9 +936,52 @@ export default function IngresoForm() {
         return;
       }
 
-      // ====== EDICIÓN (payload base) ======
-      await editarMut.mutateAsync({ id, body: payload });
+      const selectedCuotaIds = collectSelectedCuotaIds(appsHonNew);
+
+      let aplicacionesGastos = undefined;
+
+      const gastosIniciales = initialStateRef.current?.appsGas || [];
+      const normalizeGastos = (arr) => {
+        if (!Array.isArray(arr)) return [];
+        return arr
+          .map((a) => ({
+            gastoId: Number(a.gastoId || a.gasto?.id || a.id || 0),
+            monto: Number(String(a.monto || a.montoAplicadoARS || a.montoAplicado || 0).replace(/,/g, ".")),
+          }))
+          .filter((a) => a.gastoId > 0 && a.monto > 0)
+          .sort((a, b) => a.gastoId - b.gastoId);
+      };
+      const gastosInicialesNorm = normalizeGastos(gastosIniciales);
+      const gastosActualesNorm = normalizeGastos(appsGas);
+      const gastosCambiaron = JSON.stringify(gastosInicialesNorm) !== JSON.stringify(gastosActualesNorm);
+
+      if (appsGas && appsGas.length > 0) {
+        aplicacionesGastos = (appsGas || []).map((a) => {
+          const gastoId = Number(a.gastoId || a.gasto?.id || a.id || 0);
+          const montoRaw = a.monto || a.montoAplicadoARS || a.montoAplicado || 0;
+          const monto = Number(String(montoRaw).replace(/,/g, "."));
+          return { gastoId, monto };
+        }).filter((a) => {
+          return Number.isFinite(a.gastoId) && a.gastoId > 0 && Number.isFinite(a.monto) && a.monto > 0;
+        });
+      } else if (gastosCambiaron && gastosIniciales.length > 0) {
+        aplicacionesGastos = [];
+      } else if (gastosTouched) {
+        aplicacionesGastos = [];
+      }
+
+      const bodyToSend = {
+        ...payload,
+        selectedCuotaIds,
+      };
+
+      if (aplicacionesGastos !== undefined) {
+        bodyToSend.aplicacionesGastos = aplicacionesGastos;
+      }
+
+      await updateIngresoReconciliar(Number(id), bodyToSend);
       enqueueSnackbar("Ingreso actualizado", { variant: "success" });
+      qc.invalidateQueries();
       nav(backTo, { replace: true });
     } catch (e) {
       enqueueSnackbar(
@@ -660,29 +993,21 @@ export default function IngresoForm() {
     }
   };
 
-  /* -------- UI -------- */
   const loading = isSubmitting || ingLoading || cliLoading || casosLoading;
   const errorBlock = (ingErr && ingErrObj) || (cliErr && cliErrObj);
-  const TF = (props) => <TextField fullWidth size="small" {...props} />;
 
-  // Equivalentes
   const equivLabel = equivPreview?.label || "Equivalencia";
   const equivValue = equivPreview
     ? (isJUS ? formatCurrency(equivPreview.value, "ARS") : `${equivPreview.value.toFixed(4)} JUS`)
     : "";
 
-  // helper: wrapper para mensajes cuando falta cliente
   const needsClientMsg = (content) =>
     (isViewMode || clienteIdVal)
       ? content
       : <Typography variant="body2" color="text.secondary">Seleccioná un cliente para ver detalles.</Typography>;
 
-  // ===== Render de secciones según uiMode =====
   const renderSections = () => {
-    if (uiMode === "simple") {
-      // nada debajo (sin listas, sin resumen)
-      return null;
-    }
+    if (uiMode === "simple") return null;
 
     if (uiMode === "gastosOnly") {
       return (
@@ -692,10 +1017,38 @@ export default function IngresoForm() {
               noFrame
               clienteId={clienteIdVal}
               casoId={casoIdVal}
-              ingresoDisponibleARS={Math.max(ingresoARS - totalSelHonARS, 0)}
+              ingresoDisponibleARS={editMode ? Math.max(ingresoARS - totalSelHonARS - totalSelGasARS, 0) : Math.max(ingresoARS - totalSelHonARS, 0)}
               value={appsGas}
-              onChange={(next) => { setAppsGas(next); setAplicGastos(next); setSelectionTouched(true); }}
+              onChange={(next) => {
+                const nextArray = Array.isArray(next) ? [...next] : [];
+                setAppsGas(nextArray);
+                setAplicGastos(nextArray);
+
+                const prev = prevAppsGasRef.current;
+                const normalize = (arr) => {
+                  if (!Array.isArray(arr)) return [];
+                  return arr
+                    .map((a) => ({
+                      gastoId: Number(a.gastoId),
+                      monto: Number(String(a.monto || 0).replace(/,/g, ".")),
+                    }))
+                    .filter((a) => a.gastoId > 0 && a.monto > 0)
+                    .sort((a, b) => a.gastoId - b.gastoId);
+                };
+                const prevNorm = normalize(prev || []);
+                const nextNorm = normalize(nextArray || []);
+                const changed = JSON.stringify(prevNorm) !== JSON.stringify(nextNorm);
+                if (changed && prev !== null) {
+                  setSelectionTouched(true);
+                  setGastosTouched(true);
+                  prevAppsGasRef.current = nextArray;
+                } else if (!prev && nextArray && nextArray.length > 0) {
+                  prevAppsGasRef.current = nextArray;
+                }
+              }}
               viewOnly={isViewMode}
+              editMode={editMode}
+              gastosAplicadosAEsteIngreso={gastosAplicadosAEsteIngreso}
             />
           )}
         </Box>
@@ -713,9 +1066,16 @@ export default function IngresoForm() {
               casoId={casoIdVal}
               valorJusNum={valorJusNum}
               ingresoId={editMode ? Number(id) : undefined}
-              restanteARS={Math.max(ingresoARS - (useResumenInicial ? Number(aplicadoInicialARS) : 0), 0)}
+              restanteARS={Math.max(ingresoARS - totalSelHonARS - totalSelGasARS, 0)}
+              ingresoARS={ingresoARS}
+              totalSelGasARS={totalSelGasARS}
               value={appsHonNew}
-              onChange={(next) => { setAppsHonNew(next); setSelectionTouched(true); }}
+              onChange={(next) => {
+                if (editMode && !selectionTouched && initialStateRef.current.appsHonNew === null && next && next.length > 0) {
+                  initialStateRef.current.appsHonNew = JSON.parse(JSON.stringify(next));
+                }
+                setAppsHonNew(Array.isArray(next) ? [...next] : []);
+              }}
               onUserEdit={() => setSelectionTouched(true)}
               viewOnly={isViewMode}
             />
@@ -723,8 +1083,7 @@ export default function IngresoForm() {
         </Box>
       );
     }
-    
-    // bothSections
+
     return (
       <Box sx={{ mt: 2 }}>
         <Box
@@ -735,21 +1094,12 @@ export default function IngresoForm() {
             mb: 1.5,
           }}
         >
-          <Accordion
-            disableGutters
-            elevation={0}
-            square
-            sx={{
-              boxShadow: "none",
-              "&::before": { display: "none" },
-            }}
-          >
+          <Accordion disableGutters elevation={0} square sx={{ boxShadow: "none", "&::before": { display: "none" } }}>
             <AccordionSummary expandIcon={<ExpandMoreIcon />}>
               <Typography sx={{ fontWeight: 600 }}>
                 Honorarios {cuotasSelCount ? `· ${cuotasSelCount} seleccionadas` : ""}
               </Typography>
             </AccordionSummary>
-
             <AccordionDetails sx={{ p: 0 }}>
               {needsClientMsg(
                 <IngresoCuotaForm
@@ -759,12 +1109,16 @@ export default function IngresoForm() {
                   casoId={casoIdVal}
                   valorJusNum={valorJusNum}
                   ingresoId={editMode ? Number(id) : undefined}
-                  restanteARS={Math.max(
-                    ingresoARS - (useResumenInicial ? Number(aplicadoInicialARS) : 0),
-                    0
-                  )}
+                  restanteARS={Math.max(ingresoARS - totalSelHonARS - totalSelGasARS, 0)}
+                  ingresoARS={ingresoARS}
+                  totalSelGasARS={totalSelGasARS}
                   value={appsHonNew}
-                  onChange={(next) => { setAppsHonNew(next); setSelectionTouched(true); }}
+                  onChange={(next) => {
+                    if (editMode && !selectionTouched && initialStateRef.current.appsHonNew === null && next && next.length > 0) {
+                      initialStateRef.current.appsHonNew = JSON.parse(JSON.stringify(next));
+                    }
+                    setAppsHonNew(Array.isArray(next) ? [...next] : []);
+                  }}
                   onUserEdit={() => setSelectionTouched(true)}
                   viewOnly={isViewMode}
                 />
@@ -772,7 +1126,7 @@ export default function IngresoForm() {
             </AccordionDetails>
           </Accordion>
         </Box>
-        
+
         <Box
           sx={{
             border: (t) => `1px solid ${t.palette.divider}`,
@@ -781,39 +1135,61 @@ export default function IngresoForm() {
             mb: 1.5,
           }}
         >
-          <Accordion
-            disableGutters
-            elevation={0}
-            square
-            sx={{ boxShadow: "none", "&::before": { display: "none" } }}
-          >
+          <Accordion disableGutters elevation={0} square sx={{ boxShadow: "none", "&::before": { display: "none" } }}>
             <AccordionSummary expandIcon={<ExpandMoreIcon />}>
               <Typography sx={{ fontWeight: 600 }}>
                 Gastos {gastosSelCount ? `· ${gastosSelCount} seleccionados` : ""}
               </Typography>
             </AccordionSummary>
-
             <AccordionDetails sx={{ p: 0 }}>
               {needsClientMsg(
                 <IngresoGastoForm
                   noFrame
                   clienteId={clienteIdVal}
                   casoId={casoIdVal}
-                  ingresoDisponibleARS={Math.max(ingresoARS - totalSelHonARS, 0)}
+                  ingresoDisponibleARS={editMode ? Math.max(ingresoARS - totalSelHonARS - totalSelGasARS, 0) : Math.max(ingresoARS - totalSelHonARS, 0)}
                   value={appsGas}
-                  onChange={(next) => { setAppsGas(next); setAplicGastos(next); setSelectionTouched(true); }}
+                  onChange={(next) => {
+                    const nextArray = Array.isArray(next) ? [...next] : [];
+                    setAppsGas(nextArray);
+                    setAplicGastos(nextArray);
+
+                    const prev = prevAppsGasRef.current;
+                    const normalize = (arr) => {
+                      if (!Array.isArray(arr)) return [];
+                      return arr
+                        .map((a) => ({
+                          gastoId: Number(a.gastoId),
+                          monto: Number(String(a.monto || 0).replace(/,/g, ".")),
+                        }))
+                        .filter((a) => a.gastoId > 0 && a.monto > 0)
+                        .sort((a, b) => a.gastoId - b.gastoId);
+                    };
+                    const prevNorm = normalize(prev || []);
+                    const nextNorm = normalize(nextArray || []);
+                    const changed = JSON.stringify(prevNorm) !== JSON.stringify(nextNorm);
+                    if (changed && prev !== null) {
+                      setSelectionTouched(true);
+                      setGastosTouched(true);
+                      prevAppsGasRef.current = nextArray;
+                    } else if (!prev && nextArray && nextArray.length > 0) {
+                      prevAppsGasRef.current = nextArray;
+                    } else if (!prev) {
+                      if (next && next.length > 0) prevAppsGasRef.current = next;
+                    }
+                  }}
                   viewOnly={isViewMode}
+                  editMode={editMode}
+                  gastosAplicadosAEsteIngreso={gastosAplicadosAEsteIngreso}
                 />
               )}
             </AccordionDetails>
           </Accordion>
         </Box>
-
       </Box>
     );
   };
 
-  // mostrar resumen inferior sólo si no es "simple"
   const showResumen = uiMode !== "simple";
 
   return (
@@ -973,7 +1349,7 @@ export default function IngresoForm() {
 
             <TextField
               size="small"
-              label={editMode ? "Valor JUS (al cobro)" : "Valor JUS (hoy)"}
+              label={editMode ? "Valor JUS (al cobro)" : "Valor JUS (a la fecha de ingreso)"}
               value={valorJusNum != null ? formatCurrency(valorJusNum, "ARS") : ""}
               InputProps={{ readOnly: true }}
               fullWidth
@@ -1007,10 +1383,8 @@ export default function IngresoForm() {
             />
           </Row>
 
-          {/* Secciones (según concepto) */}
           {renderSections()}
 
-          {/* --------- Resumen inferior --------- */}
           {showResumen && (
             <Box
               sx={{
@@ -1038,16 +1412,16 @@ export default function IngresoForm() {
 
               <Box sx={{ borderLeft: seleccionadoARS > ingresoARS ? `3px solid ${theme.palette.error.main}` : "none", pl: seleccionadoARS > ingresoARS ? 1.5 : 0 }}>
                 <Typography variant="caption" sx={{ opacity: 0.8 }}>
-                  {editMode && !selectionTouched 
-                    ? `Ya aplicado (cuotas + gastos)` 
+                  {editMode && !selectionTouched
+                    ? `Ya aplicado (cuotas + gastos)`
                     : "Seleccionado (cuotas + gastos)"}
                   {seleccionadoARS > ingresoARS && " - ⚠️ Excede el importe"}
                 </Typography>
-                <Typography 
-                  variant="h6" 
-                  sx={{ 
-                    fontWeight: 700, 
-                    color: seleccionadoARS > ingresoARS ? theme.palette.error.main : undefined 
+                <Typography
+                  variant="h6"
+                  sx={{
+                    fontWeight: 700,
+                    color: seleccionadoARS > ingresoARS ? theme.palette.error.main : undefined
                   }}
                 >
                   {formatCurrency(seleccionadoARS, "ARS")}
@@ -1059,19 +1433,16 @@ export default function IngresoForm() {
                   Disponible
                 </Typography>
                 <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                  {editMode && ingreso 
-                    ? formatCurrency(ingreso.saldoARS || Math.max(ingresoARS - seleccionadoARS, 0), "ARS") 
-                    : formatCurrency(Math.max(ingresoARS - seleccionadoARS, 0), "ARS")}
+                  {formatCurrency(Math.max(ingresoARS - seleccionadoARS, 0), "ARS")}
                 </Typography>
               </Box>
             </Box>
           )}
 
-          {/* --------- Acciones --------- */}
           <Box sx={{ mt: 1, display: "flex", gap: 1, justifyContent: "space-between", alignItems: "center" }}>
             {!isViewMode && (
               <Box>
-                <UploadAdjuntoButton 
+                <UploadAdjuntoButton
                   clienteId={watchClienteId ? Number(watchClienteId) : undefined}
                   casoId={watchCasoId ? Number(watchCasoId) : undefined}
                   disabled={false}
@@ -1105,7 +1476,6 @@ export default function IngresoForm() {
         </Box>
       </Paper>
 
-      {/* ───────────── Diálogo: Confirmar ajuste parcial ───────────── */}
       <Dialog open={confirmOpen} onClose={() => setConfirmOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Confirmar ajuste parcial</DialogTitle>
         <DialogContent dividers>
