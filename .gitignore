@@ -1,0 +1,59 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build outputs
+dist/
+**/dist/
+build/
+**/build/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+**/.env
+**/.env.local
+
+# Credentials and sensitive files
+credentials.json
+**/credentials.json
+*.pem
+*.key
+*.cert
+
+# WhatsApp session data
+whatsapp-session/
+**/whatsapp-session/
+.wwebjs_cache/
+**/.wwebjs_cache/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Prisma
+*.db
+*.db-journal
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
