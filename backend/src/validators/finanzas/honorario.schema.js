@@ -12,20 +12,6 @@ const nonNegNum = z.preprocess(
   z.number({ invalid_type_error: "Debe ser numérico" }).min(0, "No puede ser negativo")
 ).nullable().optional();
 
-const posInt = z.preprocess(
-  (v) => (v === "" || v == null ? null : Number(v)),
-  z.number({ invalid_type_error: "Debe ser numérico" })
-    .int("Debe ser entero")
-    .positive("Debe ser mayor a cero")
-).nullable().optional();
-
-const nonNegInt = z.preprocess(
-  (v) => (v === "" || v == null ? null : Number(v)),
-  z.number({ invalid_type_error: "Debe ser numérico" })
-    .int("Debe ser entero")
-    .min(0, "No puede ser negativo")
-).nullable().optional();
-
 const honorarioBase = z.object({
   clienteId: z.coerce.number().int().positive().optional().nullable(),
   casoId:    z.coerce.number().int().positive().optional().nullable(),
@@ -38,7 +24,7 @@ const honorarioBase = z.object({
 
   politicaJusId: z.coerce.number().int().positive().optional().nullable(),
 
-  jus:         posInt,
+  jus:         posNum,
   montoPesos:  posNum,
   valorJusRef: posNum,
 
@@ -92,7 +78,7 @@ export const actualizarHonorarioSchema = honorarioBase
     activo: true,
   })
   .extend({
-    jus: nonNegInt,
+    jus: nonNegNum,
     montoPesos: nonNegNum,
     valorJusRef: nonNegNum,
   })

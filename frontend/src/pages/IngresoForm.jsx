@@ -463,7 +463,7 @@ export default function IngresoForm() {
 
   const equivPreview = useMemo(() => {
     if (isUSDorEUR) return null;
-    const n = Number(String(montoStrVal || "").replace(/\./g, "").replace(",", "."));
+    const n = parseIngresoMontoStr(montoStrVal, isJUS);
     const vj = Number(valorJusNum || 0);
     if (!Number.isFinite(n) || !vj) return null;
     return isJUS ? { label: "Equivalente ARS", value: n * vj } : { label: "Equivalente JUS", value: n / vj };
@@ -488,6 +488,22 @@ export default function IngresoForm() {
       if (firstSepIdx === 0) v = "0" + sep + after;
     }
     return v;
+  }
+
+  /** Monto en pesos (miles con punto, decimal con coma) o cantidad JUS (coma o punto decimal, sin miles). */
+  function parseIngresoMontoStr(raw, isJus) {
+    const s = String(raw ?? "").trim();
+    if (!s) return NaN;
+    if (!isJus) {
+      return Number(s.replace(/\./g, "").replace(",", "."));
+    }
+    if (s.includes(",")) {
+      return Number(s.replace(/\./g, "").replace(",", "."));
+    }
+    const parts = s.split(".");
+    if (parts.length <= 1) return Number(s);
+    if (parts.length === 2) return Number(`${parts[0]}.${parts[1]}`);
+    return Number(s.replace(/\./g, ""));
   }
 
   /* submit base */
@@ -555,8 +571,7 @@ export default function IngresoForm() {
 
   /* -------- Totales visuales -------- */
   const ingresoARS = useMemo(() => {
-    const raw = String(montoStrVal || "").replace(/\./g, "").replace(",", ".");
-    const n = Number(raw);
+    const n = parseIngresoMontoStr(montoStrVal, isJUS);
     if (!Number.isFinite(n) || n <= 0) return 0;
     if (isJUS) {
       const vj = Number(valorJusNum || 0);
@@ -872,20 +887,10 @@ export default function IngresoForm() {
       const isJUSLocal =
         !!monedaLocal && String(monedaLocal.nombre || monedaLocal.codigo || "").toUpperCase().includes("JUS");
 
-      let montoNumber;
-      if (isJUSLocal) {
-        if (!/^\d+$/.test(raw)) {
-          enqueueSnackbar("En JUS solo se permiten enteros", { variant: "warning" });
-          return;
-        }
-        montoNumber = Number(raw);
-      } else {
-        const normalized = raw.replace(/\./g, "").replace(",", ".");
-        montoNumber = Number(normalized);
-        if (!Number.isFinite(montoNumber) || montoNumber <= 0) {
-          enqueueSnackbar("Monto inválido", { variant: "warning" });
-          return;
-        }
+      const montoNumber = parseIngresoMontoStr(raw, isJUSLocal);
+      if (!Number.isFinite(montoNumber) || montoNumber <= 0) {
+        enqueueSnackbar(isJUSLocal ? "Cantidad JUS inválida" : "Monto inválido", { variant: "warning" });
+        return;
       }
 
       const payload = limpiarPayload({ ...values });
@@ -1331,12 +1336,19 @@ export default function IngresoForm() {
                   label={isJUS ? "Cantidad (JUS) *" : "Monto *"}
                   type="text"
                   inputProps={{
-                    inputMode: isJUS ? "numeric" : "decimal",
-                    pattern: isJUS ? "[0-9]*" : "[0-9.,]*",
+                    inputMode: "decimal",
+                    pattern: isJUS ? "[0-9]*[.,]?[0-9]*" : "[0-9.,]*",
                     autoComplete: "off",
                   }}
                   value={field.value ?? ""}
-                  onChange={(e) => field.onChange(sanitizeMontoInput(e.target.value, isJUS))}
+                  onChange={(e) => {
+                    const v = e.target.value.replace(/\s/g, "");
+                    if (isJUS) {
+                      if (v === "" || /^\d*[.,]?\d*$/.test(v)) field.onChange(v);
+                    } else {
+                      field.onChange(sanitizeMontoInput(e.target.value, false));
+                    }
+                  }}
                   error={!!errors.montoStr}
                   helperText={errors.montoStr?.message}
                   InputProps={

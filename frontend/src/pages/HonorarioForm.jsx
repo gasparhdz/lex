@@ -182,7 +182,9 @@ function CuotasGrid({ plan, isJus, formatCurrency }) {
         <TableBody sx={{ "& tr:nth-of-type(odd)": { backgroundColor: (t) => (t.palette.mode === "dark" ? "transparent" : "#fafafa") } }}>
           {cuotas.map((c) => {
             const venc = c.vencimiento ? new Date(c.vencimiento).toLocaleDateString("es-AR") : "-";
-            const monto = isJus ? `${parseInt(c.montoJus || 0, 10)} JUS` : (c.montoPesos != null ? formatCurrency(Number(c.montoPesos), "ARS") : "");
+            const monto = isJus
+              ? `${Number(c.montoJus || 0).toLocaleString("es-AR", { maximumFractionDigits: 4 })} JUS`
+              : (c.montoPesos != null ? formatCurrency(Number(c.montoPesos), "ARS") : "");
             
             // Valores calculados por el backend
             const aplicadoARS = Number(c.aplicadoARS || 0);
@@ -495,9 +497,9 @@ export default function HonorarioForm() {
   }, [valorJusPorFechaReg, honorario, valorJusNum]);
 
   const importeCalculado = useMemo(() => {
-    const cant = parseInt(String(jusWatch || "0"), 10);
+    const cant = Number(String(jusWatch || "").replace(",", "."));
     const vj = Number(valorJusNumber || 0);
-    if (!isJUS || !cant || !vj) return "";
+    if (!isJUS || !Number.isFinite(cant) || cant <= 0 || !vj) return "";
     return (cant * vj).toFixed(2);
   }, [isJUS, jusWatch, valorJusNumber]);
 
@@ -591,7 +593,12 @@ export default function HonorarioForm() {
     if (payload.fechaRegulacion) payload.fechaRegulacion = toIsoDateOnlyLocal(payload.fechaRegulacion);
 
     if (isJUS) {
-      payload.jus = parseInt(payload.jus, 10);
+      const jn = Number(String(payload.jus).replace(",", "."));
+      if (!Number.isFinite(jn) || jn <= 0) {
+        enqueueSnackbar("La cantidad de JUS no es válida", { variant: "warning" });
+        return;
+      }
+      payload.jus = jn;
 
       let jusRef = honorario?.valorJusRef != null ? Number(honorario.valorJusRef) : null;
 
@@ -911,9 +918,14 @@ export default function HonorarioForm() {
                 render={({ field }) => (
                   <TextField
                     fullWidth size="small" label="Cantidad de JUS"
-                    type="text" inputProps={{ inputMode: "numeric", pattern: "\\d*", readOnly: ro }}
+                    type="text"
+                    inputProps={{ inputMode: "decimal", readOnly: ro }}
                     value={field.value ?? ""}
-                    onChange={(e) => { if (ro) return; const v = e.target.value; if (/^\d*$/.test(v)) field.onChange(v); }}
+                    onChange={(e) => {
+                      if (ro) return;
+                      const v = e.target.value;
+                      if (v === "" || /^\d*[.,]?\d*$/.test(v)) field.onChange(v);
+                    }}
                     disabled={ro}
                   />
                 )}
@@ -928,7 +940,7 @@ export default function HonorarioForm() {
                 render={({ field }) => (
                   <TextField
                     fullWidth size="small" label="Cantidad de JUS"
-                    type="text" inputProps={{ inputMode: "numeric", pattern: "\\d*", readOnly: true }}
+                    type="text" inputProps={{ inputMode: "decimal", readOnly: true }}
                     value=""
                     disabled
                   />
@@ -1132,7 +1144,7 @@ export default function HonorarioForm() {
                             
                             if (cant > 0 && saldoPendiente > 0) {
                               const porCuota = saldoPendiente / cant;
-                              setValue("plan.montoPorCuota", isJUS ? Math.round(porCuota) : porCuota.toFixed(2));
+                              setValue("plan.montoPorCuota", isJUS ? Number(porCuota.toFixed(4)) : porCuota.toFixed(2));
                             }
                           }}
                         />
@@ -1193,7 +1205,7 @@ export default function HonorarioForm() {
                         }
                         
                           const montoCalculado = cant > 0 && saldoPendiente > 0
-                            ? (isJUS ? Math.round(saldoPendiente / cant) : (saldoPendiente / cant).toFixed(2))
+                            ? (isJUS ? Number((saldoPendiente / cant).toFixed(4)) : (saldoPendiente / cant).toFixed(2))
                             : "";
                         
                         // Actualizar el valor en el form cuando cambia
@@ -1258,7 +1270,9 @@ export default function HonorarioForm() {
                                     saldoPendiente = isJUS ? Number(jusWatch) : Number(montoPesosWatch);
                                   }
                                   const monto = cant > 0 && saldoPendiente > 0 ? (saldoPendiente / cant) : 0;
-                                  return isJUS ? `${Math.round(monto)} JUS` : formatCurrency(monto, "ARS");
+                                  return isJUS
+                                    ? `${Number(monto).toLocaleString("es-AR", { maximumFractionDigits: 4 })} JUS`
+                                    : formatCurrency(monto, "ARS");
                                 })()}
                               </Typography>
                             </Box>

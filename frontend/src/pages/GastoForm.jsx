@@ -580,7 +580,10 @@ export default function GastoForm() {
                       fullWidth
                       value={field.value ?? ""}
                       allowNegative={false}
-                      decimalScale={0}
+                      decimalScale={4}
+                      fixedDecimalScale={false}
+                      decimalSeparator=","
+                      allowedDecimalSeparators={[".", ","]}
                       allowLeadingZeros={false}
                       suffix=" JUS"
                       onValueChange={(vals) => field.onChange(vals.value)}
